@@ -1,13 +1,13 @@
 import asyncio
-import config
+from main_structure import config
 import logging
 from aiogram import Bot, Dispatcher, types
-from keyboard import start_keyboard
+from main_structure.keyboard import start_keyboard
 from data_base.redis_conn import storage
-from keyboard import change_profile_keyboard
+from main_structure.keyboard import change_profile_keyboard
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
-from class_user import User, execute_query
+from main_structure.class_user import User, execute_query
 
 bot = Bot(token=config.token)
 dp = Dispatcher(bot, storage=storage)

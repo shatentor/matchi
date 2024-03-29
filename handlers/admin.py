@@ -1,13 +1,13 @@
 import asyncio
-import config
+from main_structure import config
 import logging
 from aiogram import Bot, Dispatcher, types
 from data_base.redis_conn import storage
 from data_base.db_connect_users import is_admin
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from keyboard import admin_keyboard
+from main_structure.keyboard import admin_keyboard
 from aiogram.dispatcher import FSMContext
-from class_user import select_all_tg_chat_id
+from main_structure.class_user import select_all_tg_chat_id
 
 
 bot = Bot(token=config.token)

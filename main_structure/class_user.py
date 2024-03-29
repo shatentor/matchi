@@ -1,5 +1,5 @@
 from data_base.db_connect_users import connect_to_database
-from cities_functions import full_coincidence
+from main_structure.cities_functions import full_coincidence
 import numpy as np
 import mariadb
 from aiogram import types

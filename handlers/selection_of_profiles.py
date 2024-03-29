@@ -1,11 +1,11 @@
-from class_user import execute_query
-import config
+from main_structure.class_user import execute_query
+from main_structure import config
 import logging
 from aiogram.dispatcher import FSMContext
 from aiogram import Bot, Dispatcher, types
-from keyboard import searching_profiles_keyboard, yes_or_no_keyboard
+from main_structure.keyboard import searching_profiles_keyboard, yes_or_no_keyboard
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from class_user import User
+from main_structure.class_user import User
 from data_base.redis_conn import storage
 
 bot = Bot(token=config.token)

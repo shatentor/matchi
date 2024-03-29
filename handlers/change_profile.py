@@ -1,13 +1,13 @@
 import mariadb
 from data_base.redis_conn import storage
-from class_user import User
-import config
+from main_structure.class_user import User
+from main_structure import config
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from keyboard import gender_keyboard, preferred_gender_keyboard, city_keyboard, photo_change_keyboard
-from cities_functions import full_coincidence, get_relevant_cities
+from main_structure.keyboard import gender_keyboard, preferred_gender_keyboard, city_keyboard, photo_change_keyboard
+from main_structure.cities_functions import full_coincidence, get_relevant_cities
 
 
 
