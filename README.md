@@ -11,7 +11,7 @@ searching suitable for your people much easier.
 1. Clone repository:
     ```
     git clone https://github.com/shatentor/matchi.git
-    cd vpn_bot
+    cd matchi
     ```
    
 2. Install requirements:
