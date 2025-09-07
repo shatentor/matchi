@@ -1,0 +1,4 @@
+.venv
+project_contents.txt
+/.env
+__init__.py

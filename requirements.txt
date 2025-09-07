@@ -1,0 +1,6 @@
+aiogram>=3.22
+asyncpg
+python-dotenv
+numpy
+redis
+pydantic
