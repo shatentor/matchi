@@ -34,6 +34,9 @@ FEED_PAGE = 50
 SCAN_PAGES = 10
 # Сколько символов поста показывать в подписи кнопки и в списке своих постов
 PREVIEW_LENGTH = 40
+# Сколько своих постов показывать за раз: у /my_posts на каждый пост своя кнопка
+# удаления, и длинный список не влезет ни в сообщение, ни в клавиатуру.
+MY_POSTS_LIMIT = 10
 
 REACTION_NOTE = {
     "set": "Реакция поставлена.",
@@ -241,13 +244,17 @@ class FeedHandlers:
                 await message.answer("Лента пока пуста. Первый пост за вами: /post")
                 return
             post_id = page[0].id
-            header = header or "Нового с прошлого раза нет — вот самый свежий пост."
+            # Непрочитанное может лежать глубже, чем SCAN_PAGES страниц ленты;
+            # тогда честнее открыть самый свежий, а не молчать про новое.
+            header = (f"Новых постов: {unseen}. Начало непрочитанного слишком далеко, "
+                      f"показываю самый свежий." if unseen
+                      else "Нового с прошлого раза нет — вот самый свежий пост.")
 
         await self._show(message, viewer_id, post_id, header=header)
 
     async def my_posts_command(self, message: types.Message) -> None:
         viewer_id = message.chat.id
-        items = await self.post_service.my_posts(viewer_id, settings.POSTS_PER_DAY)
+        items = await self.post_service.my_posts(viewer_id, MY_POSTS_LIMIT)
         if not items:
             await message.answer("Вы ещё ничего не публиковали. Первый пост — /post")
             return

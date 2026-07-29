@@ -38,9 +38,9 @@ class Settings:
     POST_MAX_COMMENT_LENGTH: int = int(os.getenv("POST_MAX_COMMENT_LENGTH", 700))
     POSTS_PER_DAY: int = int(os.getenv("POSTS_PER_DAY", 10))
     FEED_COMMENTS_PREVIEW: int = int(os.getenv("FEED_COMMENTS_PREVIEW", 5))
-    # Уведомлять участников о новом посте: веерная рассылка идёт через Outbox,
-    # поэтому в маленькой сети это уместно, но каждый может отключить у себя.
-    FEED_NOTIFY_DEFAULT: bool = os.getenv("FEED_NOTIFY_DEFAULT", "1") not in ("0", "false", "False")
+    # Значение по умолчанию для уведомлений о постах задаёт схема
+    # (users.feed_notify DEFAULT TRUE), настройки для него нет намеренно:
+    # мёртвый параметр в конфиге хуже отсутствующего.
 
     # Инвайты: закрытая сеть, вход только по коду
     INVITE_CODE_LENGTH: int = int(os.getenv("INVITE_CODE_LENGTH", 8))

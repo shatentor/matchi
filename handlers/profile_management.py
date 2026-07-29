@@ -314,6 +314,10 @@ class ProfileManagementHandlers:
         # Fallback-хендлеры ловят только нетекстовые сообщения и регистрируются
         # после основных: в aiogram 3 порядок регистрации задаёт приоритет
         not_command = ~F.text.startswith("/")
+        # Фильтр Command читает message.text ИЛИ message.caption, поэтому фото
+        # с подписью-командой обязано дойти до своего хендлера, а не сохраниться
+        # как новая фотография профиля.
+        not_caption_command = ~F.caption.startswith("/")
 
         self.router.callback_query.register(self.change_name_button, F.data == "change_name",
                                             is_registered_filter)
@@ -384,8 +388,9 @@ class ProfileManagementHandlers:
                                                 "delete_photo") | F.data.startswith("add_photo"),
                                             StateFilter(ChangeProfileStates.photo_selection))
         self.router.message.register(self.photo_selection_invalid, StateFilter(ChangeProfileStates.photo_selection),
-                                     not_command)
-        self.router.message.register(self.new_photo_to_db, StateFilter(ChangeProfileStates.photo_changing), F.photo)
+                                     not_command, not_caption_command)
+        self.router.message.register(self.new_photo_to_db, StateFilter(ChangeProfileStates.photo_changing),
+                                     F.photo, not_caption_command)
         self.router.message.register(self.photo_changing_invalid, StateFilter(ChangeProfileStates.photo_changing),
-                                     not_command)
+                                     not_command, not_caption_command)
         return self.router

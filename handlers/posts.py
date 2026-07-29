@@ -11,7 +11,7 @@ from config.settings import settings
 from filters.custom_filters import IsRegistered
 from keyboards.feed import (PostCB, post_confirm_keyboard, post_content_keyboard,
                             post_topic_keyboard)
-from models.post import MEDIA_TYPE_PHOTO, MEDIA_TYPE_VIDEO, FeedItem
+from models.post import MEDIA_TYPE_PHOTO, MEDIA_TYPE_VIDEO, FeedItem, Post
 from services.interest_service import InterestService
 from services.post_service import PostService
 from services.user_service import UserService
@@ -283,7 +283,7 @@ class PostHandlers:
             reply_markup=post_content_keyboard(len(media))
         )
 
-    async def waiting_button(self, message: types.Message, state: FSMContext) -> None:
+    async def waiting_button(self, message: types.Message) -> None:
         await message.answer("Осталось нажать кнопку под сообщением выше. "
                              "Бросить пост — /post заново.")
 
@@ -383,7 +383,7 @@ class PostHandlers:
         if message is not None:
             await message.answer("Создание поста отменено. Начать заново — /post")
 
-    async def _notify(self, author_id: int, post) -> None:
+    async def _notify(self, author_id: int, post: Post) -> None:
         """Веер уведомлений о новом посте — целиком забота сервиса (Outbox).
 
         Сбой рассылки не должен выглядеть для автора как неудачная публикация:

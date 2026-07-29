@@ -258,6 +258,10 @@ class RegistrationHandlers:
         # иначе из начатой регистрации нельзя выйти, а "/start" на шаге города
         # был бы записан как название города
         not_command = ~F.text.startswith("/")
+        # Фильтр Command читает message.text ИЛИ message.caption, поэтому одного
+        # not_command мало: фото с подписью "/start" иначе съедается загрузкой
+        # фотографий, и команда до своего хендлера не доходит.
+        not_caption_command = ~F.caption.startswith("/")
 
         self.router.message.register(self.process_invite, F.text, not_command, StateFilter(Register.invite))
         self.router.message.register(self.process_invite_invalid, not_command, StateFilter(Register.invite))
@@ -275,6 +279,8 @@ class RegistrationHandlers:
         self.router.message.register(self.process_description, F.text, not_command,
                                      StateFilter(Register.description))
         self.router.message.register(self.process_description_invalid, not_command, StateFilter(Register.description))
-        self.router.message.register(self.process_photo_upload, F.photo, StateFilter(Register.photo))
-        self.router.message.register(self.process_photo_invalid, not_command, StateFilter(Register.photo))
+        self.router.message.register(self.process_photo_upload, F.photo, not_caption_command,
+                                     StateFilter(Register.photo))
+        self.router.message.register(self.process_photo_invalid, not_command, not_caption_command,
+                                     StateFilter(Register.photo))
         return self.router
