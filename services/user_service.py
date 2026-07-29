@@ -17,6 +17,18 @@ class UserService:
             user = await self.user_repo.create(user)
         return user
 
+    async def sync_username(self, user: User, username: Optional[str]) -> User:
+        """Догоняет сменившийся @username.
+
+        Юзернейм пишется в БД только при регистрации, а взаимные лайки и жалобы
+        показывают именно его — без синхронизации контакт может оказаться нерабочим.
+        """
+        if username == user.tg_username:
+            return user
+        await self.user_repo.update_username(user.tg_chat_id, username)
+        user.tg_username = username
+        return user
+
     async def update_user_profile_field(self, tg_chat_id: int, field_name: str, new_value: Any) -> User:
         user = await self.user_repo.get_by_id(str(tg_chat_id))
         if not user:

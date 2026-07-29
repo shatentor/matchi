@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Any
 
 class User(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     tg_chat_id: str
     tg_username: Optional[str] = None
     name: Optional[str] = None
@@ -17,10 +19,6 @@ class User(BaseModel):
     last_shown_profile: Optional[str] = None
     support_time: Optional[int] = None # Unix timestamp
     is_registered: str = "no" # 'yes', 'no', 'in_progress'
-
-    class Config:
-        # orm_mode = True # УДАЛЕНО
-        from_attributes = True # ИСПРАВЛЕНО
 
 class UserProfileData(BaseModel): # Модель для отображения полной информации о профиле
     tg_chat_id: str

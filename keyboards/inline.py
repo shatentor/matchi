@@ -1,5 +1,5 @@
 from aiogram import types
-from aiogram.utils.keyboard import InlineKeyboardBuilder # ИМПОРТИРУЕМ InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from typing import List, Optional
 from models.user import User
 
@@ -22,7 +22,7 @@ def gender_keyboard():
 def admin_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text='Message to all users', callback_data='message_to_all')
-    # builder.button(text='Show all complains', callback_data='show_complains') # Если будет реализовано
+    builder.button(text='Show all complains', callback_data='show_complains')
     builder.adjust(1) # По одной кнопке в ряд
     return builder.as_markup()
 
@@ -65,15 +65,17 @@ def photo_management_keyboard(user: User):
             types.InlineKeyboardButton(text="Удалить фото 3", callback_data="delete_photo_three")
         )
 
-    # Кнопки для добавления фото в свободные слоты
+    # Фото добавляются по порядку, поэтому предлагаем только первый свободный слот.
+    # Текст кнопки нейтральный: номер слота пользователю не важен.
+    # Ряд добавляем через row(), а не button() + adjust(): adjust() пересобирает
+    # разметку из плоского списка всех кнопок и разрушил бы пары "Изменить/Удалить".
     if not has_photo_one:
-        builder.button(text="Добавить фото 1", callback_data="add_photo_one")
+        builder.row(types.InlineKeyboardButton(text="Добавить фото", callback_data="add_photo_one"))
     elif not has_photo_two:
-        builder.button(text="Добавить фото 2", callback_data="add_photo_two")
+        builder.row(types.InlineKeyboardButton(text="Добавить фото", callback_data="add_photo_two"))
     elif not has_photo_three:
-        builder.button(text="Добавить фото 3", callback_data="add_photo_three")
+        builder.row(types.InlineKeyboardButton(text="Добавить фото", callback_data="add_photo_three"))
 
-    builder.adjust(2, repeat=True) # Попытается расставить по 2 в ряд для add_photo кнопок
     return builder.as_markup()
 
 

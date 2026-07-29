@@ -5,7 +5,7 @@ from aiogram import Dispatcher, types, Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command, StateFilter
-from config import settings
+from config.settings import settings
 
 from services.user_service import UserService
 from services.matching_service import MatchingService
@@ -13,6 +13,8 @@ from services.support_service import SupportService
 from keyboards.inline import start_keyboard, change_profile_keyboard, yes_or_no_keyboard
 from models.user import UserProfileData
 from filters.custom_filters import IsRegistered
+from utils.text import escape
+from utils.telegram import safe_send_message, safe_send_media_group
 from aiogram.types import InputMediaPhoto
 
 logger = logging.getLogger(__name__)
@@ -34,10 +36,10 @@ class CommandHandlers:
         user_status = await self.user_service.get_registration_status(tg_chat_id)
 
         if user_status is None or user_status == "no":
-            await message.answer('Привет🙋! Это *Matchi* - бот для знакомств. \n\n'
+            await message.answer('Привет🙋! Это <b>Matchi</b> - бот для знакомств. \n\n'
                                  'Здесь вы можете найти интересных людей. \n'
-                                 'Сначала вам нужно ответить на несколько вопросов.', reply_markup=start_keyboard(),
-                                 parse_mode="MARKDOWN")
+                                 'Сначала вам нужно ответить на несколько вопросов.',
+                                 reply_markup=start_keyboard())
         elif user_status == "yes":
             await message.answer('Вы уже зарегистрированы.')
         elif user_status == "in_progress":
@@ -58,17 +60,17 @@ class CommandHandlers:
             await message.answer("Ваш профиль еще не полностью заполнен или не существует.")
             return
 
-        text = (f'*Ваш профиль*:\n\n'
-                f' *Имя*: {user_profile_data.name}\n'
-                f' *Возраст*: {user_profile_data.age}\n'
-                f' *Город*: {user_profile_data.city}\n'
-                f' *Пол*: {user_profile_data.gender}\n'
-                f' *Предпочитаемый пол*: {user_profile_data.preferred_gender}\n'
-                f' *Предпочитаемый возраст*: [{user_profile_data.age_range}]\n\n'
-                f'*Описание*:\n'
-                f'  {user_profile_data.description}')
+        text = (f'<b>Ваш профиль</b>:\n\n'
+                f' <b>Имя</b>: {escape(user_profile_data.name)}\n'
+                f' <b>Возраст</b>: {user_profile_data.age}\n'
+                f' <b>Город</b>: {escape(user_profile_data.city)}\n'
+                f' <b>Пол</b>: {escape(user_profile_data.gender)}\n'
+                f' <b>Предпочитаемый пол</b>: {escape(user_profile_data.preferred_gender)}\n'
+                f' <b>Предпочитаемый возраст</b>: {escape(user_profile_data.age_range)}\n\n'
+                f'<b>Описание</b>:\n'
+                f'  {escape(user_profile_data.description)}')
 
-        await message.answer(text, parse_mode='MARKDOWN')
+        await message.answer(text)
 
         media_group_photos = await self.user_service.get_user_media_group(tg_chat_id)
         if media_group_photos:
@@ -77,57 +79,74 @@ class CommandHandlers:
             await message.answer("У вас пока нет фотографий в профиле.")
 
     async def change_profile_command(self, message: types.Message):
-        await message.answer("Выберите параметр, который хотите *изменить:* ", parse_mode="MARKDOWN",
+        await message.answer("Выберите параметр, который хотите <b>изменить:</b> ",
                              reply_markup=change_profile_keyboard())
 
-    async def support_create(self, message: types.Message, state: FSMContext): # Добавлен state
+    async def support_create(self, message: types.Message, state: FSMContext):
         tg_chat_id = message.chat.id
 
+        # TODO: check_support_cooldown обновляет время последнего обращения уже здесь,
+        # поэтому кулдаун тратится даже если пользователь так и не напишет сообщение.
+        # Время стоит фиксировать в support_send, после фактической отправки.
         remaining_time = await self.support_service.check_support_cooldown(tg_chat_id)
 
         if remaining_time == 0:
-            await message.answer("*Напишите сообщение:*", parse_mode="MARKDOWN")
-            await state.set_state(CommandsStates.support_message) # ИСПРАВЛЕНО
+            await message.answer("<b>Напишите сообщение:</b>")
+            await state.set_state(CommandsStates.support_message)
         else:
             await message.answer(f"Вы можете связаться с администратором через:\n"
                                  f"{remaining_time} секунд")
 
     async def support_send(self, message: types.Message, state: FSMContext):
-        admin_ids = settings.Settings.ADMIN_IDS
-        sender_username = message.from_user.username if message.from_user.username else f"ID: {message.chat.id}"
+        admin_ids = settings.ADMIN_IDS
+        username = message.from_user.username if message.from_user else None
+        sender_info = f"@{escape(username)}" if username else f"ID: {message.chat.id}"
 
+        # html_text сохраняет форматирование пользователя и уже экранирован
+        text = f"Запрос в поддержку от {sender_info}:\n{message.html_text}"
+
+        delivered = 0
         for admin_id in admin_ids:
-            try:
-                await message.bot.send_message(admin_id, f"Запрос в поддержку от @{sender_username}:\n"
-                                                         f"{message.text}")
-            except Exception as e:
-                logger.error(f"Не удалось отправить сообщение админу {admin_id}: {e}")
+            if await safe_send_message(message.bot, admin_id, text):
+                delivered += 1
 
-        await message.answer("Сообщение отправлено и будет обработано.")
+        if delivered:
+            await message.answer("Сообщение отправлено и будет обработано.")
+        else:
+            logger.error(f"Запрос в поддержку от {message.chat.id} не доставлен ни одному админу.")
+            await message.answer("Не удалось отправить сообщение администратору. "
+                                 "Попробуйте, пожалуйста, позже.")
         await state.clear()
+
+    async def support_send_invalid(self, message: types.Message, state: FSMContext):
+        # Админам пересылается html_text, у нетекстового сообщения он пуст
+        await message.answer("Вы сейчас пишете обращение в поддержку. Пожалуйста, пришлите его текстом:")
 
     async def show_profile_without_keyboard(self, bot: Bot, shown_profile_id: str, current_message: types.Message):
         user_profile_data = await self.user_service.get_user_profile_data(int(shown_profile_id))
 
         if not user_profile_data:
+            # Анкета неполная (например, нет описания) — показывать нечего
+            logger.warning(f"Профиль {shown_profile_id} пропущен: нет полных данных.")
             await current_message.answer("Не удалось получить информацию о профиле.")
             return
 
         media_group_photos = await self.user_service.get_user_media_group(int(shown_profile_id))
-        if media_group_photos:
-            await bot.send_media_group(current_message.chat.id, media=media_group_photos)
+        await safe_send_media_group(bot, current_message.chat.id, media_group_photos)
 
-        text = (f"Имя: {user_profile_data.name}\n"
+        contact = f"@{escape(user_profile_data.tg_username)}" if user_profile_data.tg_username \
+            else "скрыто"
+
+        text = (f"Имя: {escape(user_profile_data.name)}\n"
                 f"Возраст: {user_profile_data.age}\n"
-                f"Город: {user_profile_data.city}\n\n"
-                f"О себе:\n {user_profile_data.description}\n\n"
-                f"Имя пользователя: @{user_profile_data.tg_username}")
+                f"Город: {escape(user_profile_data.city)}\n\n"
+                f"О себе:\n {escape(user_profile_data.description)}\n\n"
+                f"Имя пользователя: {contact}")
 
         await current_message.answer(text)
 
     async def show_mutual_liked(self, message: types.Message):
         tg_chat_id = message.chat.id
-        await message.answer("Ваши взаимные лайки:")
 
         mutual_likes_ids = await self.matching_service.get_mutual_likes(tg_chat_id)
 
@@ -135,15 +154,28 @@ class CommandHandlers:
             await message.answer("У вас пока нет взаимных лайков.")
             return
 
+        await message.answer("Ваши взаимные лайки:")
+
         for liked_cid in mutual_likes_ids:
             await self.show_profile_without_keyboard(message.bot, liked_cid, message)
 
     def get_router(self, is_registered_filter: IsRegistered) -> Router:
+        # not_command нужен, чтобы команды не съедались хендлером состояния,
+        # а доходили до командных хендлеров — иначе "/show_mutual_likes" во время
+        # ввода обращения уехал бы админам как текст обращения (support_send
+        # зарегистрирован раньше show_mutual_liked в этом же роутере).
+        # Fallback ловит только нетекстовые сообщения и регистрируется после основного:
+        # в aiogram 3 порядок регистрации задаёт приоритет
+        not_command = ~F.text.startswith("/")
+
         self.router.message.register(self.start_func, Command("start"))
         self.router.message.register(self.help_func, Command("help"))
         self.router.message.register(self.show_profile_func, Command("show_my_profile"), is_registered_filter)
         self.router.message.register(self.change_profile_command, Command("change_my_profile"), is_registered_filter)
-        self.router.message.register(self.support_create, Command("support"), is_registered_filter) # Здесь добавил state
-        self.router.message.register(self.support_send, StateFilter(CommandsStates.support_message), F.text)
+        self.router.message.register(self.support_create, Command("support"), is_registered_filter)
+        self.router.message.register(self.support_send, StateFilter(CommandsStates.support_message), F.text,
+                                     not_command)
+        self.router.message.register(self.support_send_invalid, StateFilter(CommandsStates.support_message),
+                                     not_command)
         self.router.message.register(self.show_mutual_liked, Command("show_mutual_likes"), is_registered_filter)
         return self.router

@@ -1,14 +1,17 @@
-from pydantic import BaseModel , Field
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field
+from datetime import datetime, timezone
 from typing import Optional
 
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class Message(BaseModel):
-    id: Optional[int]
+    model_config = ConfigDict(from_attributes=True)
+
+    id: Optional[int] = None
     sender_chat_id: str
     receiver_chat_id: str
     message_text: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-    class Config:
-        # orm_mode = True # УДАЛЕНО
-        from_attributes = True # ИСПРАВЛЕНО
+    timestamp: datetime = Field(default_factory=_utc_now)

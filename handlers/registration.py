@@ -4,6 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command, StateFilter
 
+from config.settings import settings
 from services.user_service import UserService
 from keyboards.inline import start_keyboard, gender_keyboard, preferred_gender_keyboard, city_keyboard, \
     start_show_profiles
@@ -27,6 +28,9 @@ class Register(StatesGroup):
 
 
 class RegistrationHandlers:
+    # Поля профиля, в которые складываются фотографии (по порядку слотов)
+    PHOTO_FIELDS = ("photo_link", "photo_link_two", "photo_link_three")
+
     def __init__(self, user_service: UserService):
         self.user_service = user_service
         self.router = Router()
@@ -57,8 +61,9 @@ class RegistrationHandlers:
 
     async def process_name(self, message: types.Message, state: FSMContext):
         tg_chat_id = message.chat.id
-        if len(message.text) > 30:
-            await message.answer("Слишком длинное имя. Попробуйте еще раз:")
+        if len(message.text) > settings.MAX_NAME_LENGTH:
+            await message.answer(
+                f"Слишком длинное имя (лимит - {settings.MAX_NAME_LENGTH} символов). Попробуйте еще раз:")
             return
         # Здесь user_service.update_user_profile_field() уже найдет пользователя,
         # так как он был создан в start_registration_callback
@@ -66,7 +71,13 @@ class RegistrationHandlers:
         await message.answer('Введите ваш город:')
         await state.set_state(Register.city)
 
-    async def process_city(self, message: types.Message, state: FSMContext):
+    async def process_name_invalid(self, message: types.Message, state: FSMContext):
+        # Пользователь прислал не текст (стикер, фото и т.п.) — просим текст
+        await message.answer("Пожалуйста, напишите ваше имя текстом:")
+
+    async def _handle_city_input(self, message: types.Message, state: FSMContext):
+        # Общая логика разбора введенного города: используется и на шаге ввода,
+        # и когда пользователь вместо кнопки с подсказкой пишет город заново
         tg_chat_id = message.chat.id
         user_input_city = message.text.strip()
 
@@ -84,6 +95,21 @@ class RegistrationHandlers:
             else:
                 await message.answer("В нашем боте нет города с таким названием! Попробуйте еще раз:")
                 await state.set_state(Register.city)
+
+    async def process_city(self, message: types.Message, state: FSMContext):
+        await self._handle_city_input(message, state)
+
+    async def process_city_invalid(self, message: types.Message, state: FSMContext):
+        # Название города должно быть текстом, иначе .strip() упадет на None
+        await message.answer("Пожалуйста, напишите название вашего города текстом:")
+
+    async def process_city_to_db_text(self, message: types.Message, state: FSMContext):
+        # Пользователь не нажал кнопку с подсказкой, а написал город заново —
+        # обрабатываем это как новую попытку ввода
+        await self._handle_city_input(message, state)
+
+    async def process_city_to_db_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer("Выберите город из списка выше или напишите его название текстом:")
 
     async def process_city_from_keyboard(self, call: types.CallbackQuery, state: FSMContext):
         message = call.message
@@ -103,16 +129,21 @@ class RegistrationHandlers:
         tg_chat_id = message.chat.id
         try:
             age = int(message.text)
-            if 10 < age < 100:
+            if settings.MIN_AGE <= age <= settings.MAX_AGE:
                 await self.user_service.update_user_profile_field(tg_chat_id, "age", age)
                 await message.answer('Выберите ваш пол:', reply_markup=gender_keyboard())
                 await state.set_state(Register.gender)
             else:
-                await message.answer("Укажите ваш возраст (от 10 до 100):")
+                await message.answer(f"Укажите ваш возраст (от {settings.MIN_AGE} до {settings.MAX_AGE}):")
                 await state.set_state(Register.age)
         except ValueError:
             await message.answer("Ошибка: попробуйте ввести целое число.")
             await state.set_state(Register.age)
+
+    async def process_age_invalid(self, message: types.Message, state: FSMContext):
+        # Нетекстовое сообщение: int(None) дал бы TypeError, который не ловится выше
+        await message.answer(f"Пожалуйста, напишите ваш возраст числом "
+                             f"(от {settings.MIN_AGE} до {settings.MAX_AGE}):")
 
     async def process_gender(self, call: types.CallbackQuery, state: FSMContext):
         message = call.message
@@ -120,19 +151,30 @@ class RegistrationHandlers:
         gender = call.data
         await self.user_service.update_user_profile_field(tg_chat_id, "gender", gender)
 
-        await message.answer("Напишите описание вашего профиля (Лимит - 1000 символов):")
+        await message.answer(
+            f"Напишите описание вашего профиля (Лимит - {settings.MAX_DESCRIPTION_LENGTH} символов):")
         await state.set_state(Register.description)
         await call.answer()
 
+    async def process_gender_invalid(self, message: types.Message, state: FSMContext):
+        # На этом шаге ждем нажатие инлайн-кнопки, а не текст
+        await message.answer('Пожалуйста, выберите ваш пол кнопкой ниже:', reply_markup=gender_keyboard())
+
     async def process_description(self, message: types.Message, state: FSMContext):
         tg_chat_id = message.chat.id
-        if len(message.text) > 1000:
-            await message.answer("Лимит превышен.\nПопробуйте еще раз:")
+        if len(message.text) > settings.MAX_DESCRIPTION_LENGTH:
+            await message.answer(
+                f"Лимит превышен (максимум {settings.MAX_DESCRIPTION_LENGTH} символов).\nПопробуйте еще раз:")
             return await state.set_state(Register.description)
 
         await self.user_service.update_user_profile_field(tg_chat_id, "description", message.text)
         await message.answer("Выберите предпочитаемый пол:", reply_markup=preferred_gender_keyboard())
         await state.set_state(Register.preferred_gender)
+
+    async def process_description_invalid(self, message: types.Message, state: FSMContext):
+        # Описание должно быть текстом, иначе len(None) упадет
+        await message.answer(
+            f"Пожалуйста, пришлите описание текстом (Лимит - {settings.MAX_DESCRIPTION_LENGTH} символов):")
 
     async def process_preferred_gender(self, call: types.CallbackQuery, state: FSMContext):
         message = call.message
@@ -143,20 +185,29 @@ class RegistrationHandlers:
         await state.set_state(Register.preferred_age_lower)
         await call.answer()
 
+    async def process_preferred_gender_invalid(self, message: types.Message, state: FSMContext):
+        # На этом шаге ждем нажатие инлайн-кнопки, а не текст
+        await message.answer("Пожалуйста, выберите предпочитаемый пол кнопкой ниже:",
+                             reply_markup=preferred_gender_keyboard())
+
     async def process_preferred_age_lower(self, message: types.Message, state: FSMContext):
         tg_chat_id = message.chat.id
         try:
             lower_point = int(message.text)
-            if 10 < lower_point < 100:
+            if settings.MIN_AGE <= lower_point <= settings.MAX_AGE:
                 await self.user_service.update_user_profile_field(tg_chat_id, "age_lower_point", lower_point)
                 await message.answer("Укажите верхний предел предпочитаемого возраста:")
                 await state.set_state(Register.preferred_age_upper)
             else:
-                await message.answer("Укажите число от 10 до 100:")
+                await message.answer(f"Укажите число от {settings.MIN_AGE} до {settings.MAX_AGE}:")
                 await state.set_state(Register.preferred_age_lower)
         except ValueError:
             await message.answer("Пожалуйста, введите целое число.")
             await state.set_state(Register.preferred_age_lower)
+
+    async def process_preferred_age_lower_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer(f"Пожалуйста, напишите числом нижний предел предпочитаемого возраста "
+                             f"(от {settings.MIN_AGE} до {settings.MAX_AGE}):")
 
     async def process_preferred_age_upper(self, message: types.Message, state: FSMContext):
         tg_chat_id = message.chat.id
@@ -171,66 +222,115 @@ class RegistrationHandlers:
 
         try:
             high_point = int(message.text)
-            if 10 < high_point < 100 and high_point >= lower_point:
+            if settings.MIN_AGE <= high_point <= settings.MAX_AGE and high_point >= lower_point:
                 await self.user_service.update_user_profile_field(tg_chat_id, "age_high_point", high_point)
                 await message.answer("И последнее...")
-                await message.answer("Отправьте до трех фотографий себя (в одном сообщении): ")
+                await message.answer(f"Отправьте до {settings.MAX_PHOTOS} фотографий себя: ")
                 await state.set_state(Register.photo)
             else:
-                await message.answer(f"Укажите число от 10 до 100 и больше или равное {lower_point}:")
+                await message.answer(
+                    f"Укажите число от {settings.MIN_AGE} до {settings.MAX_AGE} "
+                    f"и больше или равное {lower_point}:")
                 await state.set_state(Register.preferred_age_upper)
         except ValueError:
             await message.answer("Пожалуйста, введите целое число:")
             await state.set_state(Register.preferred_age_upper)
 
+    async def process_preferred_age_upper_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer(f"Пожалуйста, напишите числом верхний предел предпочитаемого возраста "
+                             f"(от {settings.MIN_AGE} до {settings.MAX_AGE}):")
+
     async def process_photo_upload(self, message: types.Message, state: FSMContext):
         tg_chat_id = message.chat.id
         if not message.photo:
-            await message.answer("Пожалуйста, отправьте фотографии.")
+            await message.answer("Пожалуйста, отправьте фотографию.")
             return
 
         user = await self.user_service.get_user_by_id(tg_chat_id)
-        current_photo_links = [user.photo_link, user.photo_link_two, user.photo_link_three]
+        if user is None:
+            await message.answer("Не удалось найти ваш профиль. Пожалуйста, начните регистрацию заново: /start")
+            await state.clear()
+            return
 
-        photos_to_process = []
-        for photo_size in message.photo:
-            photos_to_process.append(photo_size.file_id)
+        slots = self.PHOTO_FIELDS[:settings.MAX_PHOTOS]
+        # Ищем первый свободный слот: альбом из нескольких фото приходит
+        # отдельными сообщениями, каждое из них занимает свой слот
+        free_field = next((field for field in slots if getattr(user, field, None) is None), None)
 
-        slot_counter = 0
-        for i, link in enumerate(current_photo_links):
-            if link is None and slot_counter < len(photos_to_process):
-                if i == 0:
-                    await self.user_service.update_user_profile_field(tg_chat_id, "photo_link",
-                                                                      photos_to_process[slot_counter])
-                elif i == 1:
-                    await self.user_service.update_user_profile_field(tg_chat_id, "photo_link_two",
-                                                                      photos_to_process[slot_counter])
-                elif i == 2:
-                    await self.user_service.update_user_profile_field(tg_chat_id, "photo_link_three",
-                                                                      photos_to_process[slot_counter])
-                slot_counter += 1
-            if slot_counter >= 3:
-                break
+        if free_field is None:
+            await message.answer(
+                f"Все {settings.MAX_PHOTOS} слотов для фото заняты, "
+                f"изменить их можно через /change_my_profile")
+            await state.clear()
+            return
 
-        await message.answer("Спасибо!\nРегистрация завершена", reply_markup=start_show_profiles())
-        await self.user_service.update_user_profile_field(tg_chat_id, "is_registered", "yes")
-        await state.clear()
+        # message.photo — это одно и то же изображение в разных разрешениях,
+        # берем самое качественное
+        file_id = message.photo[-1].file_id
+        await self.user_service.update_user_profile_field(tg_chat_id, free_field, file_id)
 
-    def get_router(self, is_registered_filter: IsRegistered, is_not_registered_filter: IsRegistered,
-                   is_in_progress_filter: IsRegistered) -> Router:
+        # Регистрацию завершаем на первой сохраненной фотографии и только один раз,
+        # чтобы не поздравлять пользователя на каждое фото из альбома
+        data = await state.get_data()
+        if not data.get("registration_completed"):
+            await self.user_service.update_user_profile_field(tg_chat_id, "is_registered", "yes")
+            await state.update_data(registration_completed=True)
+            await message.answer("Спасибо!\nРегистрация завершена", reply_markup=start_show_profiles())
+
+        if free_field == slots[-1]:
+            # Слоты закончились — только теперь выходим из состояния
+            await message.answer(
+                f"Загружено максимальное количество фотографий ({settings.MAX_PHOTOS}). "
+                f"Изменить их можно через /change_my_profile")
+            await state.clear()
+
+    async def process_photo_invalid(self, message: types.Message, state: FSMContext):
+        # На этом шаге ждем именно фотографию, а не текст или другой тип вложения
+        await message.answer(f"Пожалуйста, отправьте фотографию (до {settings.MAX_PHOTOS} штук).")
+
+    def get_router(self) -> Router:
+        # Статус регистрации здесь не фильтруется: start_registration_callback
+        # сам разбирает все три состояния ('no', 'in_progress', 'yes'),
+        # а остальные хендлеры ограничены StateFilter'ами анкеты.
         self.router.callback_query.register(self.start_registration_callback, F.data == 'go')
 
-        self.router.message.register(self.process_name, StateFilter(Register.name))
-        self.router.message.register(self.process_city, StateFilter(Register.city))
+        # Порядок регистрации важен: fallback-хендлеры идут после основных,
+        # иначе они будут перехватывать корректные сообщения.
+        # not_command нужен, чтобы команды (/start, /change_my_profile и т.д.)
+        # не съедались хендлерами состояний, а доходили до роутера команд —
+        # иначе из начатой регистрации нельзя выйти, а "/start" на шаге города
+        # был бы записан как название города
+        not_command = ~F.text.startswith("/")
+
+        self.router.message.register(self.process_name, F.text, not_command, StateFilter(Register.name))
+        self.router.message.register(self.process_name_invalid, not_command, StateFilter(Register.name))
+        self.router.message.register(self.process_city, F.text, not_command, StateFilter(Register.city))
+        self.router.message.register(self.process_city_invalid, not_command, StateFilter(Register.city))
         self.router.callback_query.register(self.process_city_from_keyboard, F.data.startswith("city_"),
                                             StateFilter(Register.city_to_db))
-        self.router.message.register(self.process_age, StateFilter(Register.age))
+        self.router.message.register(self.process_city_to_db_text, F.text, not_command,
+                                     StateFilter(Register.city_to_db))
+        self.router.message.register(self.process_city_to_db_invalid, not_command, StateFilter(Register.city_to_db))
+        self.router.message.register(self.process_age, F.text, not_command, StateFilter(Register.age))
+        self.router.message.register(self.process_age_invalid, not_command, StateFilter(Register.age))
         self.router.callback_query.register(self.process_gender, F.data.in_({'Male', 'Female', 'Other'}),
                                             StateFilter(Register.gender))
-        self.router.message.register(self.process_description, StateFilter(Register.description))
+        self.router.message.register(self.process_gender_invalid, not_command, StateFilter(Register.gender))
+        self.router.message.register(self.process_description, F.text, not_command,
+                                     StateFilter(Register.description))
+        self.router.message.register(self.process_description_invalid, not_command, StateFilter(Register.description))
         self.router.callback_query.register(self.process_preferred_gender, F.data.in_({'Male', 'Female', 'Any'}),
                                             StateFilter(Register.preferred_gender))
-        self.router.message.register(self.process_preferred_age_lower, StateFilter(Register.preferred_age_lower))
-        self.router.message.register(self.process_preferred_age_upper, StateFilter(Register.preferred_age_upper))
+        self.router.message.register(self.process_preferred_gender_invalid, not_command,
+                                     StateFilter(Register.preferred_gender))
+        self.router.message.register(self.process_preferred_age_lower, F.text, not_command,
+                                     StateFilter(Register.preferred_age_lower))
+        self.router.message.register(self.process_preferred_age_lower_invalid, not_command,
+                                     StateFilter(Register.preferred_age_lower))
+        self.router.message.register(self.process_preferred_age_upper, F.text, not_command,
+                                     StateFilter(Register.preferred_age_upper))
+        self.router.message.register(self.process_preferred_age_upper_invalid, not_command,
+                                     StateFilter(Register.preferred_age_upper))
         self.router.message.register(self.process_photo_upload, F.photo, StateFilter(Register.photo))
+        self.router.message.register(self.process_photo_invalid, not_command, StateFilter(Register.photo))
         return self.router

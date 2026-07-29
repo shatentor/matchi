@@ -1,60 +1,42 @@
-import numpy as np
-from typing import Optional, List, Tuple
+import logging
+from typing import List, Optional, Tuple
+
+from config.settings import settings
 from db.repositories.user_repo import UserRepository
 from db.repositories.like_repo import LikeRepository
+from db.repositories.dislike_repo import DislikeRepository
 from db.repositories.sticker_repo import StickerRepository
-from models.user import User  # Для фильтрации по полям User
+
+logger = logging.getLogger(__name__)
 
 
 class MatchingService:
-    def __init__(self, user_repo: UserRepository, like_repo: LikeRepository, sticker_repo: StickerRepository):
+    def __init__(self, user_repo: UserRepository, like_repo: LikeRepository,
+                 dislike_repo: DislikeRepository, sticker_repo: StickerRepository):
         self.user_repo = user_repo
         self.like_repo = like_repo
+        self.dislike_repo = dislike_repo
         self.sticker_repo = sticker_repo
 
-    async def get_profiles_for_user(self, current_user_id: int) -> np.ndarray:
+    async def get_profiles_for_user(self, current_user_id: int) -> List[str]:
         current_user = await self.user_repo.get_by_id(str(current_user_id))
         if not current_user or current_user.is_registered != 'yes':
-            return np.array([])  # Только зарегистрированные пользователи могут искать
+            return []  # Только зарегистрированные пользователи могут искать
 
         preferred_gender = current_user.preferred_gender
         lower_age = current_user.age_lower_point
         high_age = current_user.age_high_point
 
         if not all([preferred_gender, lower_age, high_age]):
-            return np.array([])  # Нет настроек для поиска
+            return []  # Нет настроек для поиска
 
-        # Получаем всех потенциальных пользователей
-        all_users = await self.user_repo.pool.fetch(
-            "SELECT tg_chat_id, gender, age FROM users WHERE is_registered = 'yes'")
-
-        eligible_profiles = []
-        for user_record in all_users:
-            profile_id = user_record['tg_chat_id']
-            profile_gender = user_record['gender']
-            profile_age = user_record['age']
-
-            if profile_id == str(current_user_id):
-                continue  # Исключаем себя
-
-            # Проверка по полу
-            if preferred_gender != "Any" and profile_gender != preferred_gender:
-                continue
-
-            # Проверка по возрасту
-            if not (lower_age <= profile_age <= high_age):
-                continue
-
-            # Проверка на уже лайкнутые/дизлайкнутые
-            if await self.like_repo.has_liked(str(current_user_id), profile_id) or \
-                    await self.like_repo.has_disliked(str(current_user_id), profile_id):  # Нужен DislikeRepository
-                continue
-
-            eligible_profiles.append(profile_id)
-
-        if eligible_profiles:
-            return np.random.permutation(eligible_profiles)
-        return np.array([])
+        return await self.user_repo.get_candidate_ids(
+            tg_chat_id=str(current_user_id),
+            preferred_gender=preferred_gender,
+            age_lower=lower_age,
+            age_upper=high_age,
+            limit=settings.CANDIDATES_LIMIT,
+        )
 
     async def process_like(self, liker_id: int, liked_id: int) -> Tuple[bool, bool, Optional[str]]:
         """
@@ -75,26 +57,19 @@ class MatchingService:
 
     async def process_dislike(self, disliker_id: int, disliked_id: int) -> bool:
         """
-        Обрабатывает дизлайк. Возвращает True, если успешно.
+        Обрабатывает дизлайк. Возвращает True, если дизлайк новый.
         """
         disliker_id_str = str(disliker_id)
         disliked_id_str = str(disliked_id)
 
-        # Здесь нужна реализация DislikeRepository.
-        # Для примера, используем execute_query напрямую, но лучше создать DislikeRepository.
-        # if await self.dislike_repo.has_disliked(disliker_id_str, disliked_id_str):
-        #     return False
-        # await self.dislike_repo.add_dislike(disliker_id_str, disliked_id_str)
+        if await self.dislike_repo.has_disliked(disliker_id_str, disliked_id_str):
+            return False
 
-        # Временная заглушка, пока не будет DislikeRepository
         try:
-            await self.user_repo.pool.execute(
-                "INSERT INTO dislikes (disliker_chat_id, disliked_chat_id) VALUES ($1, $2) ON CONFLICT (disliker_chat_id, disliked_chat_id) DO NOTHING;",
-                disliker_id_str, disliked_id_str
-            )
+            await self.dislike_repo.add_dislike(disliker_id_str, disliked_id_str)
             return True
         except Exception as e:
-            logger.error(f"Error adding dislike: {e}")
+            logger.error(f"Не удалось добавить дизлайк {disliker_id_str} -> {disliked_id_str}: {e}")
             return False
 
     async def get_mutual_likes(self, tg_chat_id: int) -> List[str]:

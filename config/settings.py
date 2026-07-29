@@ -22,6 +22,18 @@ class Settings:
     _admin_ids_str = os.getenv("ADMIN_IDS", "")
     ADMIN_IDS: List[int] = [int(x.strip()) for x in _admin_ids_str.split(',') if x.strip().isdigit()]
 
+    # Ограничения профиля
+    MIN_AGE: int = int(os.getenv("MIN_AGE", 18))
+    MAX_AGE: int = int(os.getenv("MAX_AGE", 99))
+    MAX_NAME_LENGTH: int = 30
+    MAX_DESCRIPTION_LENGTH: int = 1000
+    MAX_PHOTOS: int = 3
+
+    # Поиск и антиспам
+    CANDIDATES_LIMIT: int = int(os.getenv("CANDIDATES_LIMIT", 50))
+    SUPPORT_COOLDOWN: int = int(os.getenv("SUPPORT_COOLDOWN", 120))
+    BROADCAST_DELAY: float = float(os.getenv("BROADCAST_DELAY", 0.05))
+
 
 settings = Settings()
 

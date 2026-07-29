@@ -1,12 +1,22 @@
-# from main_structure.list_of_cities import cities # <-- Устаревший импорт
+"""Поиск города по вводу пользователя.
+
+Модуль отвечает за сопоставление введённой пользователем строки со списком
+поддерживаемых городов: точное совпадение (`full_coincidence`) и подсказка
+похожих названий при опечатке или недописанном слове (`get_relevant_cities`).
+
+Список городов задан статически прямо в модуле — осознанное упрощение,
+внешнего хранилища/конфига для него нет.
+"""
+from difflib import SequenceMatcher
 from typing import List, Optional
 
-# В идеале cities должен быть загружен из файла/конфига, а не хардкодом.
-# Для текущей структуры мы предположим, что list_of_cities.py будет перемещен в utils/
-# или его содержимое будет встроено. Для чистоты - прямое импортирование.
-# Если list_of_cities.py перемещен в utils/, то импорт будет from .list_of_cities import cities
+# Максимум подсказок, которые уходят в клавиатуру бота.
+MAX_SUGGESTIONS = 5
+# Минимальная длина ввода, при которой имеет смысл искать похожие города.
+MIN_QUERY_LENGTH = 2
+# Порог схожести difflib: ниже — считаем, что города не похожи.
+SIMILARITY_THRESHOLD = 0.6
 
-# Пока что скопируем список cities для автономности utils/cities_functions.py
 cities = [
     "Moscow", "Istanbul", "London", "Saint Petersburg", "Berlin",
     "Madrid", "Kiev", "Rome", "Paris", "Bucharest",
@@ -28,7 +38,7 @@ cities = [
     "Bochum", "Wuppertal", "Murcia", "Valladolid", "Wroclaw",
     "Aarhus", "Varna", "Gdansk",
     "Constanta", "Brno", "Florence",
-    "Vienna", "Graz", "Linz", "Salzburg", "Innsbruck",
+    "Graz", "Linz", "Salzburg", "Innsbruck",
     "Klagenfurt", "Villach", "Wels", "Sankt Pölten", "Dornbirn",
     "Steyr", "Wiener Neustadt", "Feldkirch", "Bregenz", "Wolfsberg",
     "Baden", "Klosterneuburg", "Leoben", "Krems", "Traun",
@@ -42,50 +52,61 @@ cities = [
 ]
 
 
-def full_coincidence(message: str) -> Optional[str]:
+def _normalize(message: Optional[str]) -> str:
+    """Приводит ввод к нижнему регистру без пробелов по краям, None -> ''."""
+    return message.strip().lower() if message else ""
+
+
+def _similarity(query: str, city: str) -> float:
+    """Схожесть ввода с названием города: максимум по всему названию и его словам.
+
+    Отдельные слова сравниваем только если они сопоставимы по длине с вводом,
+    иначе короткие служебные слова ("in", "am") дают ложные совпадения.
+    """
+    city_lower = city.lower()
+    words = [word for word in city_lower.split()
+             if len(word) >= 3 and abs(len(word) - len(query)) <= 2]
+    return max(SequenceMatcher(None, query, part).ratio()
+               for part in (city_lower, *words))
+
+
+def full_coincidence(message: Optional[str]) -> Optional[str]:
+    """Возвращает город при точном совпадении (без учёта регистра), иначе None."""
+    query = _normalize(message)
+    if not query:
+        return None
     for city in cities:
-        if city.lower() == message.lower():
+        if city.lower() == query:
             return city
     return None
 
 
-def get_relevant_cities(message: str) -> List[str]:
-    split_city = list(message.lower())
-    coincidence_dict = {}
-    relevant_cities = []
+def get_relevant_cities(message: Optional[str]) -> List[str]:
+    """Подсказывает до MAX_SUGGESTIONS похожих городов для введённой строки.
 
-    for city in cities:
-        lettered_city = list(city.lower())
-        letter_from_user = 0
-        coincidence_counter = 0
-        for letter in lettered_city:
-            try:
-                if letter == split_city[letter_from_user]:
-                    coincidence_counter += 1
-                else:
-                    # Попытка учесть опечатки на одну букву вперед/назад
-                    if letter_from_user > 0 and letter == split_city[letter_from_user - 1]:
-                        pass  # Уже учтено или пропуск
-                    elif letter_from_user + 1 < len(split_city) and letter == split_city[letter_from_user + 1]:
-                        letter_from_user += 1  # Пропускаем букву пользователя, если совпала следующая
-            except IndexError:
-                pass
-            letter_from_user += 1
-
-        coincidence_dict[city] = coincidence_counter
-
-    # Выбираем города с максимальным совпадением, если оно достаточно велико
-    if not coincidence_dict:
+    Порядок выдачи: сначала города, начинающиеся с введённой строки, затем
+    содержащие её как подстроку, затем похожие по difflib (опечатки).
+    Внутри группы — по убыванию схожести, затем по длине названия и алфавиту.
+    Если ничего подходящего нет, возвращается пустой список.
+    """
+    query = _normalize(message)
+    if len(query) < MIN_QUERY_LENGTH:
         return []
 
-    max_coincidence = 0
-    if coincidence_dict:
-        max_coincidence = max(coincidence_dict.values())
+    scored: List[tuple[int, float, int, str]] = []
+    for city in cities:
+        city_lower = city.lower()
+        similarity = _similarity(query, city)
+        if city_lower.startswith(query):
+            group = 0
+        elif query in city_lower:
+            group = 1
+        elif similarity >= SIMILARITY_THRESHOLD:
+            group = 2
+        else:
+            continue
+        scored.append((group, -similarity, len(city), city))
 
-    for key, value in coincidence_dict.items():
-        if value == max_coincidence and len(list(key)) // 2 < value:  # Добавлено условие, что совпадение значимо
-            relevant_cities.append(key)
-
-    # Сортируем по совпадению (чем больше, тем лучше), затем по длине (короче - лучше), затем по алфавиту
-    relevant_cities.sort(key=lambda c: (-coincidence_dict[c], len(c), c))
-    return relevant_cities[:5]  # Ограничим до 5 наиболее релевантных городов
+    scored.sort()
+    # dict.fromkeys — страховка от дубликатов в списке городов.
+    return list(dict.fromkeys(item[3] for item in scored))[:MAX_SUGGESTIONS]

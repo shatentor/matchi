@@ -10,6 +10,7 @@ from config.settings import settings
 from db.connection import init_db_pool, close_db_pool, get_db_pool
 from db.repositories.user_repo import UserRepository
 from db.repositories.like_repo import LikeRepository
+from db.repositories.dislike_repo import DislikeRepository
 from db.repositories.message_repo import MessageRepository
 from db.repositories.complain_repo import ComplainRepository
 from db.repositories.sticker_repo import StickerRepository
@@ -26,6 +27,7 @@ from handlers.profile_search import ProfileSearchHandlers
 from handlers.admin import AdminHandlers
 
 from filters.custom_filters import IsRegistered, IsAdmin, IsFeedbackForCurrentProfile
+from middlewares.user_context import UserContextMiddleware
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO,
@@ -35,13 +37,14 @@ logger = logging.getLogger(__name__)
 async def set_commands(bot: Bot):
     """Устанавливает стандартные команды для бота."""
     commands = [
+        BotCommand(command="/start", description="Начать"),
         BotCommand(command="/show_my_profile", description="Мой профиль"),
         BotCommand(command="/change_my_profile", description="Изменить мой профиль"),
         BotCommand(command="/searchi", description="Поиск профилей"),
         BotCommand(command="/show_mutual_likes", description="Мои взаимные лайки"),
         BotCommand(command="/support", description="Сообщение администратору"),
         BotCommand(command="/help", description="Помощь :)")
-        # BotCommand(command="/admin", description="Админ-панель") # Для админов
+        # /admin и /complains намеренно не публикуются в меню — они только для админов
     ]
     await bot.set_my_commands(commands)
 
@@ -55,13 +58,15 @@ async def main():
     # --- Создание экземпляров репозиториев ---
     user_repo = UserRepository(pool)
     like_repo = LikeRepository(pool)
+    dislike_repo = DislikeRepository(pool)
     message_repo = MessageRepository(pool)
     complain_repo = ComplainRepository(pool)
     sticker_repo = StickerRepository(pool)
 
     # --- Создание экземпляров сервисов ---
     user_service = UserService(user_repo=user_repo)
-    matching_service = MatchingService(user_repo=user_repo, like_repo=like_repo, sticker_repo=sticker_repo)
+    matching_service = MatchingService(user_repo=user_repo, like_repo=like_repo,
+                                       dislike_repo=dislike_repo, sticker_repo=sticker_repo)
     admin_service = AdminService(user_repo=user_repo, complain_repo=complain_repo)
     support_service = SupportService(user_repo=user_repo, complain_repo=complain_repo, message_repo=message_repo)
 
@@ -73,20 +78,21 @@ async def main():
     bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=storage)
 
+    # --- Регистрация middleware ---
+    # Именно outer_middleware: данные должны попасть в контекст до фильтров,
+    # чтобы IsRegistered брал готовую модель вместо собственного запроса к БД.
+    user_context_middleware = UserContextMiddleware(user_service)
+    dp.message.outer_middleware(user_context_middleware)
+    dp.callback_query.outer_middleware(user_context_middleware)
+
     # --- Инициализация кастомных фильтров ---
     is_registered_filter = IsRegistered(user_service, expected_status="yes")
-    is_not_registered_filter = IsRegistered(user_service, expected_status="no")
-    is_in_progress_filter = IsRegistered(user_service, expected_status="in_progress")
     is_admin_filter = IsAdmin(admin_service)
     is_feedback_for_current_profile_filter = IsFeedbackForCurrentProfile(user_service)
 
 
     # --- Создание экземпляров хендлеров и получение их роутеров ---
-    registration_router = RegistrationHandlers(user_service).get_router(
-        is_registered_filter=is_registered_filter,
-        is_not_registered_filter=is_not_registered_filter,
-        is_in_progress_filter=is_in_progress_filter
-    )
+    registration_router = RegistrationHandlers(user_service).get_router()
     command_router = CommandHandlers(user_service, matching_service, support_service).get_router(
         is_registered_filter=is_registered_filter
     )

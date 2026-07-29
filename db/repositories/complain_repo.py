@@ -16,6 +16,10 @@ class ComplainRepository(BaseRepository):
         record = await self._fetch_one(query, complain.reporter_chat_id, complain.reported_chat_id, complain.reason)
         return record if record else complain
 
+    async def get_all(self, limit: int = 50) -> List[Complain]:
+        query = "SELECT * FROM complains ORDER BY timestamp DESC LIMIT $1;"
+        return await self._fetch_all(query, limit)
+
     async def get_complains_by_reporter(self, reporter_chat_id: str) -> List[Complain]:
         query = "SELECT * FROM complains WHERE reporter_chat_id = $1 ORDER BY timestamp DESC;"
         return await self._fetch_all(query, reporter_chat_id)

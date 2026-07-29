@@ -56,6 +56,36 @@ class UserRepository(BaseRepository):
         records = await self.pool.fetch(query)
         return [r['tg_chat_id'] for r in records]
 
+    async def get_candidate_ids(self, tg_chat_id: str, preferred_gender: str,
+                                age_lower: int, age_upper: int, limit: int) -> List[str]:
+        """Возвращает перемешанный список ID анкет, подходящих пользователю.
+
+        Отбор целиком выполняется в БД: одним запросом вместо выборки всех
+        пользователей и двух запросов на каждого из них. Анкеты без описания
+        исключаются, потому что отрисовать их всё равно невозможно.
+        """
+        query = """
+        SELECT u.tg_chat_id
+        FROM users u
+        WHERE u.is_registered = 'yes'
+          AND u.tg_chat_id <> $1
+          AND u.age BETWEEN $2 AND $3
+          AND ($4 = 'Any' OR u.gender = $4)
+          AND EXISTS (SELECT 1 FROM descriptions d WHERE d.tg_chat_id = u.tg_chat_id
+                      AND d.descr IS NOT NULL AND d.descr <> '')
+          AND NOT EXISTS (SELECT 1 FROM likes l
+                          WHERE l.liker_chat_id = $1 AND l.liked_chat_id = u.tg_chat_id)
+          AND NOT EXISTS (SELECT 1 FROM dislikes dl
+                          WHERE dl.disliker_chat_id = $1 AND dl.disliked_chat_id = u.tg_chat_id)
+        ORDER BY RANDOM()
+        LIMIT $5;
+        """
+        records = await self.pool.fetch(query, tg_chat_id, age_lower, age_upper, preferred_gender, limit)
+        return [r['tg_chat_id'] for r in records]
+
+    async def update_username(self, tg_chat_id: str, username: Optional[str]) -> None:
+        await self._execute_query("UPDATE users SET tg_username = $1 WHERE tg_chat_id = $2", username, tg_chat_id)
+
     async def update_register_status(self, tg_chat_id: str, status: str) -> None:
         await self._execute_query("UPDATE users SET is_registered = $1 WHERE tg_chat_id = $2", status, tg_chat_id)
 

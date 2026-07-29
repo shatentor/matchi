@@ -15,7 +15,5 @@ class AdminService:
     async def get_all_user_chat_ids(self) -> List[str]:
         return await self.user_repo.get_all_chat_ids()
 
-    async def get_all_complains(self) -> List[Complain]:
-        # Нужен метод в ComplainRepository для получения всех жалоб
-        # Пока просто заглушка
-        return await self.complain_repo.pool.fetch("SELECT * FROM complains ORDER BY timestamp DESC") # Возвращает records, нужно конвертировать
+    async def get_all_complains(self, limit: int = 50) -> List[Complain]:
+        return await self.complain_repo.get_all(limit)
