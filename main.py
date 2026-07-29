@@ -19,6 +19,7 @@ from db.repositories.dialog_repo import DialogRepository
 from db.repositories.room_repo import RoomRepository
 from db.repositories.invite_repo import InviteRepository
 from db.repositories.community_repo import CommunityRepository
+from db.repositories.post_repo import PostRepository
 
 from services.user_service import UserService
 from services.matching_service import MatchingService
@@ -30,6 +31,7 @@ from services.roulette_service import RouletteService
 from services.room_service import RoomService
 from services.invite_service import InviteService
 from services.community_service import CommunityService
+from services.post_service import PostService
 from services.outbox import Outbox
 
 from handlers.registration import RegistrationHandlers
@@ -42,6 +44,8 @@ from handlers.dialogs import DialogHandlers
 from handlers.rooms import RoomHandlers
 from handlers.menu import MenuHandlers
 from handlers.invites import InviteHandlers
+from handlers.posts import PostHandlers
+from handlers.feed import FeedHandlers
 from handlers.errors import build_errors_router
 
 from filters.custom_filters import IsRegistered, IsAdmin, IsFeedbackForCurrentProfile
@@ -61,6 +65,8 @@ async def set_commands(bot: Bot):
     # /admin и /complains не публикуются: они только для админов.
     commands = [
         BotCommand(command="/menu", description="Меню"),
+        BotCommand(command="/feed", description="Лента"),
+        BotCommand(command="/post", description="Новый пост"),
         BotCommand(command="/searchi", description="Искать людей"),
         BotCommand(command="/invite", description="Пригласить друга"),
         BotCommand(command="/community", description="Вход в чат сообщества"),
@@ -88,6 +94,7 @@ async def main():
     room_repo = RoomRepository(pool)
     invite_repo = InviteRepository(pool)
     community_repo = CommunityRepository(pool)
+    post_repo = PostRepository(pool)
 
     # --- Создание экземпляров сервисов ---
     user_service = UserService(user_repo=user_repo)
@@ -100,6 +107,7 @@ async def main():
     room_service = RoomService(room_repo=room_repo, user_repo=user_repo)
     invite_service = InviteService(invite_repo=invite_repo)
     community_service = CommunityService(community_repo=community_repo)
+    post_service = PostService(post_repo=post_repo, user_repo=user_repo)
 
     # Инициализация хранилища FSM (Redis)
     # Используем RedisStorage для aiogram v3
@@ -124,6 +132,8 @@ async def main():
     room_service.outbox = outbox
     # Без этого /room_create native не сможет создать форум-топик в супергруппе.
     room_service.community_service = community_service
+    # Уведомления о новых постах — тоже веер, поэтому только через очередь.
+    post_service.outbox = outbox
 
     # --- Регистрация middleware ---
     # Порядок важен: троттлинг идёт первым, чтобы отброшенный апдейт не стоил
@@ -148,7 +158,8 @@ async def main():
     # Экземпляры храним в переменных: меню вызывает их точки входа напрямую,
     # чтобы не дублировать логику разделов.
     registration_router = RegistrationHandlers(user_service, invite_service).get_router()
-    invites_router = InviteHandlers(invite_service, user_service).get_router(
+    invite_handlers_instance = InviteHandlers(invite_service, user_service)
+    invites_router = invite_handlers_instance.get_router(
         is_registered_filter=is_registered_filter
     )
     command_handlers_instance = CommandHandlers(user_service, matching_service, support_service)
@@ -185,12 +196,28 @@ async def main():
     rooms_router = room_handlers_instance.get_router(
         is_registered_filter=is_registered_filter, is_admin_filter=is_admin_filter
     )
+    post_handlers_instance = PostHandlers(
+        post_service=post_service,
+        interest_service=interest_service,
+        user_service=user_service,
+    )
+    posts_router = post_handlers_instance.get_router(is_registered_filter=is_registered_filter)
+    feed_handlers_instance = FeedHandlers(
+        post_service=post_service,
+        user_service=user_service,
+        admin_service=admin_service,
+        interest_service=interest_service,
+    )
+    feed_router = feed_handlers_instance.get_router(is_registered_filter=is_registered_filter)
     menu_router = MenuHandlers(
         command_handlers=command_handlers_instance,
         search_handlers=profile_search_handlers_instance,
         dialog_handlers=dialog_handlers_instance,
         room_handlers=room_handlers_instance,
         interest_handlers=interest_handlers_instance,
+        invite_handlers=invite_handlers_instance,
+        post_handlers=post_handlers_instance,
+        feed_handlers=feed_handlers_instance,
         dialog_service=dialog_service,
     ).get_router(is_registered_filter=is_registered_filter)
     admin_handlers_instance = AdminHandlers(admin_service, user_service)
@@ -209,6 +236,8 @@ async def main():
     dp.include_router(profile_search_router)
     dp.include_router(interests_router)
     dp.include_router(invites_router)
+    dp.include_router(posts_router)
+    dp.include_router(feed_router)
     dp.include_router(dialogs_router)
     dp.include_router(rooms_router)
     dp.include_router(admin_router)

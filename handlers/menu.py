@@ -29,12 +29,16 @@ class MenuHandlers:
     """
 
     def __init__(self, command_handlers, search_handlers, dialog_handlers,
-                 room_handlers, interest_handlers, dialog_service=None):
+                 room_handlers, interest_handlers, invite_handlers=None,
+                 post_handlers=None, feed_handlers=None, dialog_service=None):
         self.commands = command_handlers
         self.search = search_handlers
         self.dialogs = dialog_handlers
         self.rooms = room_handlers
         self.interests = interest_handlers
+        self.invites = invite_handlers
+        self.posts = post_handlers
+        self.feed = feed_handlers
         # Нужен, чтобы при уходе в раздел корректно закрыть активный диалог
         # и уведомить собеседника, а не бросить переписку в подвешенном виде.
         self.dialog_service = dialog_service
@@ -42,6 +46,25 @@ class MenuHandlers:
 
     async def show_menu(self, message: types.Message):
         await message.answer(MENU_TITLE, reply_markup=main_menu_keyboard())
+
+    async def _open_feed_section(self, action: str, message: types.Message, state: FSMContext) -> None:
+        """Разделы ленты и постов. Хендлеры необязательные: если их не передали,
+        честно говорим об этом вместо молчания."""
+        # Свои посты и переключатель уведомлений живут в FeedHandlers,
+        # создание поста — в PostHandlers.
+        owner = self.posts if action == "new_post" else self.feed
+        if owner is None:
+            await message.answer("Этот раздел пока недоступен.")
+            return
+
+        if action == "feed":
+            await owner.feed_command(message, state)
+        elif action == "new_post":
+            await owner.post_command(message, state)
+        elif action == "my_posts":
+            await owner.my_posts_command(message)
+        else:
+            await owner.feed_notify_command(message)
 
     async def _leave_relay_modes(self, message: types.Message, state: FSMContext) -> None:
         """Выводит из режимов, где реплики уходят не боту, а людям.
@@ -107,6 +130,12 @@ class MenuHandlers:
             await self.commands.support_create(message, state)
         elif action == "help":
             await self.commands.help_func(message)
+        elif action == "invite":
+            await self.invites.invite_command(message)
+        elif action == "community":
+            await self.rooms.community_command(message)
+        elif action in ("feed", "new_post", "my_posts", "feed_notify"):
+            await self._open_feed_section(action, message, state)
         else:
             logger.warning(f"Неизвестный раздел меню: {action}")
             await message.answer("Такого раздела нет. Откройте меню заново: /menu")

@@ -49,6 +49,8 @@ MODULES = [
     "keyboards.menu", "handlers.menu",
     "models.invite", "db.repositories.invite_repo", "services.invite_service", "handlers.invites",
     "models.community", "db.repositories.community_repo", "services.community_service",
+    "models.post", "db.repositories.post_repo", "services.post_service",
+    "keyboards.feed", "handlers.posts", "handlers.feed",
     "main",
 ]
 for m in MODULES:
@@ -165,7 +167,8 @@ try:
 
     invite_service = InviteService(invite_repo=InviteRepository(pool))
     r1 = RegistrationHandlers(user_service, invite_service).get_router()
-    r11 = InviteHandlers(invite_service, user_service).get_router(is_registered_filter=is_registered)
+    invite_handlers = InviteHandlers(invite_service, user_service)
+    r11 = invite_handlers.get_router(is_registered_filter=is_registered)
     r2 = CommandHandlers(user_service, matching_service, support_service).get_router(
         is_registered_filter=is_registered)
     r3 = ProfileManagementHandlers(user_service).get_router(is_registered_filter=is_registered)
@@ -217,18 +220,34 @@ try:
     r7 = dialog_handlers.get_router(is_registered_filter=is_registered)
     r8 = room_handlers.get_router(is_registered_filter=is_registered, is_admin_filter=is_admin)
     r9 = build_errors_router()
+    from db.repositories.post_repo import PostRepository
+    from handlers.feed import FeedHandlers
+    from handlers.posts import PostHandlers
+    from services.post_service import PostService
+
+    post_service = PostService(post_repo=PostRepository(pool), user_repo=user_repo, outbox=outbox)
+    post_handlers = PostHandlers(post_service=post_service, interest_service=interest_service,
+                                 user_service=user_service)
+    feed_handlers = FeedHandlers(post_service=post_service, user_service=user_service,
+                                 admin_service=admin_service, interest_service=interest_service)
+    r12 = post_handlers.get_router(is_registered_filter=is_registered)
+    r13 = feed_handlers.get_router(is_registered_filter=is_registered)
+
     r10 = MenuHandlers(
         command_handlers=CommandHandlers(user_service, matching_service, support_service),
         search_handlers=ps,
         dialog_handlers=dialog_handlers,
         room_handlers=room_handlers,
         interest_handlers=interest_handlers,
+        invite_handlers=invite_handlers,
+        post_handlers=post_handlers,
+        feed_handlers=feed_handlers,
         dialog_service=dialog_service,
     ).get_router(is_registered_filter=is_registered)
 
     # Порядок обязан совпадать с main.py: он определяет, какой роутер
     # перехватывает апдейт первым, и без этого имитация роутинга обманывает.
-    built = (r1, r10, r2, r3, r4, r6, r11, r7, r8, r5, r9)
+    built = (r1, r10, r2, r3, r4, r6, r11, r12, r13, r7, r8, r5, r9)
     for r in built:
         dp.include_router(r)
     counts = {r.name: (len(r.message.handlers), len(r.callback_query.handlers)) for r in built}

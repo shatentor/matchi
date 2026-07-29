@@ -32,6 +32,16 @@ class Settings:
     MAX_LINKS_LENGTH: int = 300
     MAX_OFFER_LENGTH: int = 500
 
+    # Посты и лента
+    POST_MAX_TEXT_LENGTH: int = int(os.getenv("POST_MAX_TEXT_LENGTH", 1500))
+    POST_MAX_MEDIA: int = int(os.getenv("POST_MAX_MEDIA", 10))
+    POST_MAX_COMMENT_LENGTH: int = int(os.getenv("POST_MAX_COMMENT_LENGTH", 700))
+    POSTS_PER_DAY: int = int(os.getenv("POSTS_PER_DAY", 10))
+    FEED_COMMENTS_PREVIEW: int = int(os.getenv("FEED_COMMENTS_PREVIEW", 5))
+    # Уведомлять участников о новом посте: веерная рассылка идёт через Outbox,
+    # поэтому в маленькой сети это уместно, но каждый может отключить у себя.
+    FEED_NOTIFY_DEFAULT: bool = os.getenv("FEED_NOTIFY_DEFAULT", "1") not in ("0", "false", "False")
+
     # Инвайты: закрытая сеть, вход только по коду
     INVITE_CODE_LENGTH: int = int(os.getenv("INVITE_CODE_LENGTH", 8))
     INVITE_TTL_DAYS: int = int(os.getenv("INVITE_TTL_DAYS", 14))

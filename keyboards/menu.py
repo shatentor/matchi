@@ -14,6 +14,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     # Только row(): adjust() переразбивает все ряды и ломает явную разметку.
     builder.row(
+        _button("📰 Лента", "feed"),
+        _button("✍️ Новый пост", "new_post"),
+    )
+    builder.row(
         _button("🔍 Искать людей", "search"),
         _button("💬 Переписки", "dialogs"),
     )
@@ -34,6 +38,14 @@ def extra_menu_keyboard() -> InlineKeyboardMarkup:
     builder.row(
         _button("💞 Взаимные лайки", "mutual"),
         _button("✏️ Изменить профиль", "edit_profile"),
+    )
+    builder.row(
+        _button("📝 Мои посты", "my_posts"),
+        _button("🎟 Пригласить", "invite"),
+    )
+    builder.row(
+        _button("🏛 Чат сообщества", "community"),
+        _button("🔔 Уведомления", "feed_notify"),
     )
     builder.row(
         _button("✉️ Написать админу", "support"),
