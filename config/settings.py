@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 from typing import List
 
 load_dotenv()
@@ -41,6 +42,15 @@ class Settings:
     # Значение по умолчанию для уведомлений о постах задаёт схема
     # (users.feed_notify DEFAULT TRUE), настройки для него нет намеренно:
     # мёртвый параметр в конфиге хуже отсутствующего.
+
+    # Каталог участников и поиск
+    DIRECTORY_PAGE_SIZE: int = int(os.getenv("DIRECTORY_PAGE_SIZE", 8))
+    SEARCH_MIN_QUERY: int = int(os.getenv("SEARCH_MIN_QUERY", 2))
+
+    # Резервные копии базы
+    BACKUP_DIR: str = os.getenv("BACKUP_DIR", str(Path.home() / ".local/share/matchi-backups"))
+    BACKUP_KEEP: int = int(os.getenv("BACKUP_KEEP", 14))
+    PG_BIN_DIR: str = os.getenv("PG_BIN_DIR", "/usr/lib/postgresql/16/bin")
 
     # Инвайты: закрытая сеть, вход только по коду
     INVITE_CODE_LENGTH: int = int(os.getenv("INVITE_CODE_LENGTH", 8))
