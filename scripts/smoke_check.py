@@ -35,9 +35,18 @@ MODULES = [
     "db.repositories.complain_repo", "db.repositories.message_repo",
     "services.user_service", "services.matching_service", "services.admin_service",
     "services.support_service",
-    "filters.custom_filters", "middlewares.user_context", "keyboards.inline",
+    "filters.custom_filters", "middlewares.user_context", "middlewares.throttling",
+    "keyboards.inline", "keyboards.interests",
     "handlers.registration", "handlers.commands", "handlers.profile_management",
-    "handlers.profile_search", "handlers.admin", "main",
+    "handlers.profile_search", "handlers.admin", "handlers.errors",
+    # интересы, диалоги, комнаты
+    "models.interest", "db.repositories.interest_repo", "services.interest_service",
+    "handlers.interests", "services.outbox", "db.migrate",
+    "models.dialog", "db.repositories.dialog_repo", "services.dialog_service",
+    "services.roulette_service", "keyboards.dialogs", "keyboards.reply", "handlers.dialogs",
+    "models.room", "db.repositories.room_repo", "services.room_service",
+    "keyboards.rooms", "handlers.rooms",
+    "main",
 ]
 for m in MODULES:
     try:
@@ -158,9 +167,45 @@ try:
     ah = AdminHandlers(admin_service, user_service)
     ah.set_bot_instance(bot)
     r5 = ah.get_router(is_admin_filter=is_admin)
-    for r in (r1, r2, r3, r4, r5):
+
+    from db.repositories.interest_repo import InterestRepository
+    from handlers.errors import build_errors_router
+    from handlers.interests import InterestHandlers
+    from services.interest_service import InterestService
+
+    interest_service = InterestService(interest_repo=InterestRepository(pool))
+    r6 = InterestHandlers(interest_service).get_router(is_registered_filter=is_registered)
+
+    from db.repositories.dialog_repo import DialogRepository
+    from db.repositories.room_repo import RoomRepository
+    from handlers.dialogs import DialogHandlers
+    from handlers.rooms import RoomHandlers
+    from services.dialog_service import DialogService
+    from services.outbox import Outbox
+    from services.room_service import RoomService
+    from services.roulette_service import RouletteService
+
+    dialog_service = DialogService(dialog_repo=DialogRepository(pool), message_repo=message_repo,
+                                  user_repo=user_repo)
+    room_service = RoomService(room_repo=RoomRepository(pool), user_repo=user_repo)
+    outbox = Outbox(bot, on_undeliverable=room_service.handle_undeliverable)
+    room_service.outbox = outbox
+    roulette_service = RouletteService(redis_client=None, dialog_service=dialog_service)
+
+    r7 = DialogHandlers(dialog_service=dialog_service, user_service=user_service,
+                        support_service=support_service, interest_service=interest_service,
+                        roulette_service=roulette_service).get_router(is_registered_filter=is_registered)
+    r8 = RoomHandlers(room_service=room_service, interest_service=interest_service,
+                      user_service=user_service).get_router(is_registered_filter=is_registered,
+                                                            is_admin_filter=is_admin)
+    r9 = build_errors_router()
+
+    # Порядок обязан совпадать с main.py: он определяет, какой роутер
+    # перехватывает апдейт первым, и без этого имитация роутинга обманывает.
+    built = (r1, r2, r3, r4, r6, r7, r8, r5, r9)
+    for r in built:
         dp.include_router(r)
-    counts = {r.name: (len(r.message.handlers), len(r.callback_query.handlers)) for r in (r1, r2, r3, r4, r5)}
+    counts = {r.name: (len(r.message.handlers), len(r.callback_query.handlers)) for r in built}
     check("роутеры собраны и включены в Dispatcher", True, str(counts))
 except Exception as e:
     check("роутеры собраны и включены в Dispatcher", False, f"{type(e).__name__}: {e}")
@@ -349,8 +394,30 @@ try:
             except Exception as e:
                 bad_sql.append((str(p.relative_to(proj)), q[:60], str(e)[:120]))
     check(f"SQL парсится диалектом postgres ({checked} запросов)", not bad_sql, str(bad_sql))
+
+    # ---------- 11. Файлы миграций ----------
+    bad_migrations = []
+    migration_files = sorted((proj / "db" / "migrations").glob("*.sql"))
+    for p in migration_files:
+        try:
+            sqlglot.parse(p.read_text(), read="postgres")
+        except Exception as e:
+            bad_migrations.append((p.name, str(e)[:120]))
+    check(f"миграции парсятся диалектом postgres ({len(migration_files)} файлов)",
+          bool(migration_files) and not bad_migrations, str(bad_migrations))
 except ImportError:
     print("SKIP  проверка SQL: sqlglot не установлен")
+
+try:
+    from db.migrate import discover_migrations
+
+    found = discover_migrations()
+    versions = [getattr(m, "version", m) for m in found]
+    check("db.migrate находит миграции без ошибок", bool(found), f"{len(found)} шт.")
+    check("номера миграций уникальны и по порядку",
+          len(versions) == len(set(versions)) and versions == sorted(versions), str(versions))
+except Exception as e:
+    check("db.migrate находит миграции без ошибок", False, f"{type(e).__name__}: {e}")
 
 # ---------- Итог ----------
 print()

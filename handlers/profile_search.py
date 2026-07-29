@@ -10,6 +10,7 @@ from config.settings import settings
 from services.user_service import UserService
 from services.matching_service import MatchingService
 from services.support_service import SupportService
+from keyboards.dialogs import dialog_reply_keyboard
 from keyboards.inline import searching_profiles_keyboard, yes_or_no_keyboard
 from filters.custom_filters import IsRegistered, IsFeedbackForCurrentProfile
 from utils.text import escape
@@ -201,10 +202,13 @@ class ProfileSearchHandlers:
         sender_mention = _mention(sender_user.tg_username if sender_user else None, sender_id)
         receiver_chat_id = int(receiver_id)
 
+        # «Ответить» открывает диалог с отправителем сразу, без захода в его
+        # профиль и повторного нажатия «Message 💌»
         delivered = await safe_send_message(self.bot, receiver_chat_id,
                                            "Вы получили сообщение:\n"
                                            f"От <b>{sender_mention}</b>:\n"
-                                           f"{message.html_text}")
+                                           f"{message.html_text}",
+                                           reply_markup=dialog_reply_keyboard(sender_id))
 
         if delivered:
             await message.answer("Сообщение отправлено!")

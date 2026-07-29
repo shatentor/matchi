@@ -58,14 +58,23 @@ class UserRepository(BaseRepository):
 
     async def get_candidate_ids(self, tg_chat_id: str, preferred_gender: str,
                                 age_lower: int, age_upper: int, limit: int) -> List[str]:
-        """Возвращает перемешанный список ID анкет, подходящих пользователю.
+        """Возвращает список ID анкет, подходящих пользователю.
 
         Отбор целиком выполняется в БД: одним запросом вместо выборки всех
         пользователей и двух запросов на каждого из них. Анкеты без описания
         исключаются, потому что отрисовать их всё равно невозможно.
+
+        Сортировка: сначала анкеты с большим числом общих интересов, при равенстве
+        — случайный порядок. Общие интересы считаются подзапросом и на отбор не
+        влияют: кандидат без совпадений остаётся в выдаче, иначе при незаполненных
+        интересах (сид справочника может быть не применён) поиск вернул бы ноль анкет.
         """
         query = """
-        SELECT u.tg_chat_id
+        SELECT u.tg_chat_id,
+               (SELECT COUNT(*)
+                FROM user_interests mine
+                INNER JOIN user_interests theirs ON theirs.interest_id = mine.interest_id
+                WHERE mine.tg_chat_id = $1 AND theirs.tg_chat_id = u.tg_chat_id) AS common
         FROM users u
         WHERE u.is_registered = 'yes'
           AND u.tg_chat_id <> $1
@@ -77,7 +86,7 @@ class UserRepository(BaseRepository):
                           WHERE l.liker_chat_id = $1 AND l.liked_chat_id = u.tg_chat_id)
           AND NOT EXISTS (SELECT 1 FROM dislikes dl
                           WHERE dl.disliker_chat_id = $1 AND dl.disliked_chat_id = u.tg_chat_id)
-        ORDER BY RANDOM()
+        ORDER BY common DESC, RANDOM()
         LIMIT $5;
         """
         records = await self.pool.fetch(query, tg_chat_id, age_lower, age_upper, preferred_gender, limit)
