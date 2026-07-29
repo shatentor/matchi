@@ -1,4 +1,4 @@
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from aiogram import types
 from aiogram.filters.callback_data import CallbackData
@@ -23,7 +23,7 @@ class RoomCB(CallbackData, prefix="room"):
 
 def _room_button_text(room: Room) -> str:
     limit = room.member_limit
-    mark = "🏛" if room.is_native else "💬"
+    mark = "🧵" if room.is_topic else ("🏛" if room.is_native else "💬")
     return f"{mark} {room.title} · {room.member_count}/{limit}"
 
 
@@ -132,16 +132,37 @@ def room_chat_keyboard(room_id: int) -> types.InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def native_invite_keyboard(invite_link: str, room_id: int) -> types.InlineKeyboardMarkup:
-    """Ссылка-приглашение в супергруппу (режим native) и возврат к каталогу.
+def native_invite_keyboard(invite_link: Optional[str], room_id: int,
+                           topic_url: Optional[str] = None) -> types.InlineKeyboardMarkup:
+    """Вход в native-комнату: топик и ссылка-приглашение в супергруппу.
 
     Режима чата у native-комнаты нет: сообщения разносит сам Telegram,
-    бот только выдаёт ссылку с ограниченным сроком жизни.
+    бот только открывает доступ.
+
+    Ссылка на топик (t.me/c/...) работает лишь у тех, кто уже состоит в
+    закрытой супергруппе, поэтому рядом идёт одноразовое приглашение.
+    Любая из двух ссылок может отсутствовать: топика нет у комнаты, привязанной
+    к группе целиком, а приглашение не выдаётся, если у бота нет прав.
     """
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="Перейти в комнату", url=invite_link))
+
+    if topic_url:
+        builder.row(types.InlineKeyboardButton(text="Открыть топик", url=topic_url))
+    if invite_link:
+        builder.row(types.InlineKeyboardButton(
+            text="Войти в супергруппу" if topic_url else "Перейти в комнату",
+            url=invite_link
+        ))
+
     builder.row(types.InlineKeyboardButton(
         text="К списку комнат",
         callback_data=RoomCB(action="list", room_id=room_id).pack()
     ))
+    return builder.as_markup()
+
+
+def community_invite_keyboard(invite_link: str) -> types.InlineKeyboardMarkup:
+    """Одноразовое приглашение в закрытую супергруппу сообщества."""
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="Войти в сообщество", url=invite_link))
     return builder.as_markup()

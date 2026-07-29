@@ -2,10 +2,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from aiogram import Bot
+
 from config.settings import settings
 from db.repositories.room_repo import RoomRepository
 from db.repositories.user_repo import UserRepository
 from models.room import ROOM_MODE_NATIVE, ROOM_MODE_RELAY, ROOM_MODES, Room
+from services.community_service import CommunityService
 from services.outbox import Outbox
 from utils.text import escape
 
@@ -20,15 +23,22 @@ class RoomService:
     суммарно и примерно одно в секунду в один и тот же чат, поэтому отправка
     в цикле по участникам приводит к флуд-контролю на весь бот. Из тех же
     ограничений растёт settings.ROOM_MEMBER_LIMIT — relay пригоден только для
-    небольших комнат. Для больших комнат режим native: комната это реальная
-    супергруппа Telegram, и доставку берёт на себя сам Telegram.
+    небольших комнат. Режим relay остаётся для тех, кто не в супергруппе.
+
+    В режиме native комната живёт в закрытой супергруппе сообщества как
+    форум-топик: бот создаёт топик через create_forum_topic, а доставку,
+    историю и уведомления берёт на себя сам Telegram.
     """
 
     def __init__(self, room_repo: RoomRepository, user_repo: UserRepository,
-                 outbox: Optional[Outbox] = None):
+                 outbox: Optional[Outbox] = None,
+                 community_service: Optional[CommunityService] = None):
         self.room_repo = room_repo
         self.user_repo = user_repo
         self.outbox = outbox
+        # Без сообщества native-комнату создать нельзя: топик заводится в
+        # супергруппе, которую привязывает админ командой /community_bind.
+        self.community_service = community_service
 
     # ---------- каталог ----------
 
@@ -186,7 +196,14 @@ class RoomService:
 
     async def create_room(self, title: str, interest_id: Optional[int] = None,
                           description: Optional[str] = None, mode: str = ROOM_MODE_RELAY,
-                          member_limit: Optional[int] = None) -> Tuple[Optional[Room], str]:
+                          member_limit: Optional[int] = None,
+                          bot: Optional[Bot] = None) -> Tuple[Optional[Room], str]:
+        """Создаёт комнату; в режиме native — вместе с форум-топиком сообщества.
+
+        bot нужен только для native: топик заводится вызовом create_forum_topic,
+        и делается это ДО вставки строки. Обратный порядок при отказе в правах
+        оставил бы в каталоге комнату, в которую нельзя войти.
+        """
         title = (title or "").strip()
         if not title:
             return None, "Название комнаты не может быть пустым."
@@ -194,34 +211,64 @@ class RoomService:
         if mode not in ROOM_MODES:
             return None, f"Неизвестный режим комнаты: {mode}. Допустимо: {', '.join(ROOM_MODES)}."
 
+        chat_id: Optional[int] = None
+        thread_id: Optional[int] = None
+        if mode == ROOM_MODE_NATIVE:
+            if self.community_service is None:
+                return None, "Сообщество не подключено к боту, комнату-топик создать нельзя."
+            if bot is None:
+                return None, "Создать топик без доступа к Telegram нельзя."
+
+            chat_id = await self.community_service.get_chat_id()
+            if chat_id is None:
+                return None, ("Супергруппа сообщества не привязана. Отправьте /community_bind "
+                              "в самой супергруппе, потом повторите.")
+
+            thread_id, reason = await self.community_service.create_topic(bot, title)
+            if thread_id is None:
+                return None, reason
+
         room = Room(
             title=title,
             interest_id=interest_id,
             description=(description or "").strip() or None,
             mode=mode,
+            tg_chat_id=chat_id,
+            thread_id=thread_id,
             member_limit=member_limit or settings.ROOM_MEMBER_LIMIT,
         )
         created = await self.room_repo.create(room)
-        return created, f"Комната «{created.title}» создана (id {created.id}, режим {created.mode})."
+        answer = f"Комната «{created.title}» создана (id {created.id}, режим {created.mode})."
+        if created.topic_url:
+            answer += f"\nТопик: {created.topic_url}"
+        return created, answer
 
-    async def bind_native(self, room_id: int, chat_id: int) -> Tuple[bool, str]:
-        """Привязывает существующую супергруппу к комнате.
+    async def bind_native(self, room_id: int, chat_id: int,
+                          thread_id: Optional[int] = None) -> Tuple[bool, str]:
+        """Привязывает существующую супергруппу (или её топик) к комнате.
 
         Бот не может создать группу сам — её создаёт человек, добавляет бота
         администратором и вызывает привязку прямо в этой группе, чтобы id чата
-        пришёл из апдейта, а не набирался руками.
+        пришёл из апдейта, а не набирался руками. Если команду отправили внутри
+        топика, комната привяжется именно к нему.
         """
         room = await self.room_repo.get(room_id)
         if room is None:
             return False, f"Комнаты с id {room_id} нет."
 
-        occupied = await self.room_repo.get_by_native_chat(chat_id)
-        if occupied is not None and occupied.id != room_id:
-            return False, f"Эта группа уже привязана к комнате «{occupied.title}» (id {occupied.id})."
+        # Проверка занятости — только для привязки группы целиком: в одной
+        # супергруппе-сообществе живёт много комнат, каждая своим топиком.
+        if thread_id is None:
+            occupied = await self.room_repo.get_by_native_chat(chat_id)
+            if occupied is not None and occupied.id != room_id:
+                return False, (f"Эта группа уже привязана к комнате «{occupied.title}» "
+                               f"(id {occupied.id}).")
 
-        await self.room_repo.bind_native(room_id, chat_id)
-        return True, (f"Комната «{room.title}» (id {room_id}) привязана к этой группе "
-                      f"и переведена в режим {ROOM_MODE_NATIVE}.")
+        await self.room_repo.bind_native(room_id, chat_id, thread_id)
+        answer = (f"Комната «{room.title}» (id {room_id}) привязана к "
+                  f"{'этому топику' if thread_id else 'этой группе'} "
+                  f"и переведена в режим {ROOM_MODE_NATIVE}.")
+        return True, answer
 
     async def mute(self, room_id: int, tg_chat_id: int, minutes: int) -> Tuple[bool, str]:
         chat_id_str = str(tg_chat_id)

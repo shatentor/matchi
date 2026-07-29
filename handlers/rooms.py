@@ -10,9 +10,11 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config.settings import settings
 from filters.custom_filters import IsAdmin, IsRegistered
-from keyboards.rooms import (RoomCB, native_invite_keyboard, room_card_keyboard, room_chat_keyboard,
-                             room_interests_keyboard, rooms_keyboard)
+from keyboards.rooms import (RoomCB, community_invite_keyboard, native_invite_keyboard,
+                             room_card_keyboard, room_chat_keyboard, room_interests_keyboard,
+                             rooms_keyboard)
 from models.room import ROOM_MODES, ROOM_MODE_NATIVE, ROOM_MODE_RELAY, Room
+from services.community_service import SETUP_INSTRUCTION, CommunityService
 from services.interest_service import InterestService
 from services.room_service import RoomService
 from services.user_service import UserService
@@ -33,6 +35,7 @@ MODE_HINT = {
     ROOM_MODE_RELAY: "чат через бота",
     ROOM_MODE_NATIVE: "супергруппа Telegram",
 }
+TOPIC_HINT = "топик в супергруппе сообщества"
 
 
 class RoomStates(StatesGroup):
@@ -40,23 +43,36 @@ class RoomStates(StatesGroup):
 
 
 class RoomHandlers:
-    """Каталог комнат, режим чата relay-комнаты и админское управление."""
+    """Каталог комнат, режим чата relay-комнаты, сообщество и админское управление."""
 
     def __init__(self, room_service: RoomService, interest_service: InterestService,
-                 user_service: UserService):
+                 user_service: UserService,
+                 community_service: Optional[CommunityService] = None):
         self.room_service = room_service
         self.interest_service = interest_service
         self.user_service = user_service
+        # Без сообщества работают только relay-комнаты: топики живут в
+        # супергруппе, которую админ привязывает командой /community_bind.
+        self.community_service = community_service
         self.router = Router()
 
     # ---------- вспомогательное ----------
 
     @staticmethod
-    def _room_line(room: Room) -> str:
+    def _mode_hint(room: Room) -> str:
+        if room.is_topic:
+            return TOPIC_HINT
+        return MODE_HINT.get(room.mode, escape(room.mode))
+
+    @classmethod
+    def _room_line(cls, room: Room) -> str:
         parts = [f"<b>{escape(room.title)}</b> — {room.member_count}/{room.member_limit}, "
-                 f"{MODE_HINT.get(room.mode, escape(room.mode))}"]
+                 f"{cls._mode_hint(room)}"]
         if room.description:
             parts.append(escape(room.description))
+        # Ссылка собрана из чисел, экранировать в ней нечего
+        if room.topic_url:
+            parts.append(f'<a href="{room.topic_url}">Открыть топик</a>')
         return "\n".join(parts)
 
     def _catalog_text(self, rooms: List[Room], filtered: bool) -> str:
@@ -131,17 +147,27 @@ class RoomHandlers:
                                  "Напишите администратору: /support")
             return
 
+        topic_url = room.topic_url
         invite_link = await self._native_invite_link(bot, room)
-        if not invite_link:
+        if not invite_link and not topic_url:
             await message.answer("Не удалось получить приглашение в комнату. "
                                  "Попробуйте позже или напишите администратору: /support")
             return
 
         minutes = max(1, settings.ROOM_INVITE_TTL // 60)
+        if topic_url:
+            text = (f"Комната «{escape(room.title)}» — топик в закрытой супергруппе сообщества.\n"
+                    f"Если вы уже в супергруппе, открывайте топик сразу.")
+            if invite_link:
+                text += (f"\nЕсли ещё нет — ссылка-приглашение действует {minutes} мин. "
+                         f"и только для вас.")
+        else:
+            text = (f"Комната «{escape(room.title)}» — это группа в Telegram.\n"
+                    f"Ссылка действует {minutes} мин. и только для вас.")
+
         await message.answer(
-            f"Комната «{escape(room.title)}» — это группа в Telegram.\n"
-            f"Ссылка действует {minutes} мин. и только для вас.",
-            reply_markup=native_invite_keyboard(invite_link, room.id or 0)
+            text,
+            reply_markup=native_invite_keyboard(invite_link, room.id or 0, topic_url)
         )
 
     async def _enter_relay(self, message: types.Message, state: FSMContext, room: Room) -> None:
@@ -203,8 +229,10 @@ class RoomHandlers:
         text = (f"<b>{escape(room.title)}</b>\n"
                 f"{escape(room.description) if room.description else 'Без описания.'}\n\n"
                 f"Участников: {room.member_count}/{room.member_limit}\n"
-                f"Формат: {MODE_HINT.get(room.mode, escape(room.mode))}\n"
-                f"{'Вы уже участник.' if is_member else ''}")
+                f"Формат: {self._mode_hint(room)}\n")
+        if room.topic_url:
+            text += f'Топик: <a href="{room.topic_url}">открыть</a>\n'
+        text += "Вы уже участник." if is_member else ""
         await call.message.answer(text, reply_markup=room_card_keyboard(room, is_member))
         await call.answer()
 
@@ -322,6 +350,86 @@ class RoomHandlers:
         await message.answer("В комнату можно отправить только текст. "
                              "Выйти из чата — /room_exit")
 
+    # ---------- сообщество ----------
+
+    async def community_command(self, message: types.Message) -> None:
+        """Выдаёт участнику одноразовое приглашение в супергруппу сообщества."""
+        if self.community_service is None:
+            logger.error("CommunityService не передан в RoomHandlers, /community не работает")
+            await message.answer("Сообщество ещё не настроено. Напишите администратору: /support")
+            return
+
+        community = await self.community_service.get()
+        if community is None:
+            await message.answer("Администратор ещё не настроил сообщество — "
+                                 "закрытая супергруппа не привязана. Напишите ему: /support")
+            return
+
+        invite_link, reason = await self.community_service.invite_link(
+            message.bot, for_user_id=message.chat.id
+        )
+        if not invite_link:
+            await message.answer("Не удалось выдать приглашение в сообщество.\n"
+                                 f"Причина: {escape(reason)}\n"
+                                 "Напишите администратору: /support")
+            return
+
+        minutes = max(1, settings.ROOM_INVITE_TTL // 60)
+        title = escape(community.title) if community.title else "сообщество"
+        await message.answer(
+            f"«{title}» — закрытая супергруппа сообщества.\n"
+            f"Ссылка действует {minutes} мин. и только для вас, передавать её нельзя.\n"
+            f"Разделы внутри — топики; список комнат: /rooms",
+            reply_markup=community_invite_keyboard(invite_link)
+        )
+
+    async def community_bind_command(self, message: types.Message) -> None:
+        """Привязывает супергруппу сообщества; вызывается В САМОЙ супергруппе.
+
+        chat.id и chat.title берутся из апдейта: это надёжнее ввода id руками,
+        а получить их иначе бот и не может — создать супергруппу он не умеет.
+        """
+        if self.community_service is None:
+            logger.error("CommunityService не передан в RoomHandlers, /community_bind не работает")
+            await message.answer("Сообщество не подключено к боту: нужна правка main.py.")
+            return
+
+        chat = message.chat
+        if chat.type == "private":
+            await message.answer("Эту команду надо отправить В САМОЙ супергруппе сообщества — "
+                                 "id чата бот берёт из апдейта.\n\n" + SETUP_INSTRUCTION)
+            return
+
+        if chat.type != "supergroup":
+            await message.answer("Это не супергруппа, а "
+                                 f"{escape(chat.type)} — топиков здесь не бывает.\n\n"
+                                 + SETUP_INSTRUCTION)
+            return
+
+        if not chat.is_forum:
+            await message.answer("В этой супергруппе не включён режим форума, поэтому топиков "
+                                 "в ней нет.\nУправление группой → Темы (Topics) → включить, "
+                                 "потом повторите /community_bind")
+            return
+
+        ok, reason = await self.community_service.bind(chat.id, chat.title)
+        answer = escape(reason)
+
+        rights_ok, rights_reason = await self.community_service.bot_rights(message.bot, chat.id)
+        if not rights_ok:
+            answer += f"\n\nНо работать это пока не будет: {escape(rights_reason)}."
+        else:
+            answer += ("\n\nПрав боту хватает. Создавайте комнаты: "
+                       "/room_create native - Название | Описание")
+        await message.answer(answer)
+
+    async def community_unbind_command(self, message: types.Message) -> None:
+        if self.community_service is None:
+            await message.answer("Сообщество не подключено к боту: нужна правка main.py.")
+            return
+        ok, reason = await self.community_service.unbind()
+        await message.answer(escape(reason))
+
     # ---------- админские команды ----------
 
     @staticmethod
@@ -339,7 +447,10 @@ class RoomHandlers:
     async def room_create_command(self, message: types.Message, command: CommandObject) -> None:
         hint = ("Формат: /room_create &lt;relay|native&gt; &lt;id интереса или -&gt; "
                 "&lt;название&gt; | &lt;описание&gt;\n"
-                "Например: /room_create relay 3 Настолки | Играем по вечерам")
+                "Например: /room_create relay 3 Настолки | Играем по вечерам\n\n"
+                "native — комната становится топиком супергруппы сообщества "
+                "(нужен привязанный /community_bind), relay — чат через бота "
+                "для тех, кого в супергруппе нет.")
         raw = (command.args or "").strip()
         if not raw:
             await message.answer(hint)
@@ -365,14 +476,17 @@ class RoomHandlers:
             return
 
         room, reason = await self.room_service.create_room(
-            title=title, interest_id=interest_id, description=description, mode=mode
+            title=title, interest_id=interest_id, description=description, mode=mode,
+            bot=message.bot
         )
         if room is None:
             await message.answer(escape(reason))
             return
 
         answer = escape(reason)
-        if room.is_native:
+        if room.is_topic:
+            answer += "\n\nТопик создан ботом, участники попадут в него через /rooms."
+        elif room.is_native:
             answer += ("\n\nСоздать группу бот не может. Создайте супергруппу сами, "
                        "добавьте бота администратором с правом приглашать по ссылке "
                        f"и отправьте в этой группе: /room_bind {room.id}")
@@ -380,7 +494,8 @@ class RoomHandlers:
 
     async def room_bind_command(self, message: types.Message, command: CommandObject) -> None:
         hint = ("Формат: /room_bind &lt;id комнаты&gt;\n"
-                "Команду надо отправить В САМОЙ супергруппе: id чата бот берёт из апдейта.")
+                "Команду надо отправить В САМОЙ супергруппе: id чата бот берёт из апдейта.\n"
+                "Отправите внутри топика — комната привяжется к этому топику.")
         if message.chat.type not in ("group", "supergroup"):
             await message.answer(hint)
             return
@@ -390,7 +505,10 @@ class RoomHandlers:
             await message.answer(hint)
             return
 
-        ok, reason = await self.room_service.bind_native(values[0], message.chat.id)
+        # message_thread_id заполнен и у обычного ответа в ветке, поэтому топиком
+        # его считаем только при is_topic_message
+        thread_id = message.message_thread_id if message.is_topic_message else None
+        ok, reason = await self.room_service.bind_native(values[0], message.chat.id, thread_id)
         answer = escape(reason)
         if ok and message.chat.type == "group":
             answer += ("\n\nЭто обычная группа. Лучше повысить её до супергруппы: "
@@ -441,11 +559,16 @@ class RoomHandlers:
 
         self.router.message.register(self.rooms_command, Command("rooms"), is_registered_filter)
         self.router.message.register(self.room_exit_command, Command("room_exit"), is_registered_filter)
+        self.router.message.register(self.community_command, Command("community"), is_registered_filter)
 
-        # /room_bind вызывается в супергруппе, поэтому проверка регистрации к нему
-        # не применяется — там важны только права админа бота
+        # /room_bind и /community_bind вызываются в супергруппе, поэтому проверка
+        # регистрации к ним не применяется — там важны только права админа бота
         self.router.message.register(self.room_create_command, Command("room_create"), is_admin_filter)
         self.router.message.register(self.room_bind_command, Command("room_bind"), is_admin_filter)
+        self.router.message.register(self.community_bind_command, Command("community_bind"),
+                                     is_admin_filter)
+        self.router.message.register(self.community_unbind_command, Command("community_unbind"),
+                                     is_admin_filter)
         self.router.message.register(self.room_mute_command, Command("room_mute"), is_admin_filter)
         self.router.message.register(self.room_ban_command, Command("room_ban"), is_admin_filter)
         self.router.message.register(self.room_unban_command, Command("room_unban"), is_admin_filter)

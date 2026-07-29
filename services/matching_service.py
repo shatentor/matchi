@@ -23,18 +23,8 @@ class MatchingService:
         if not current_user or current_user.is_registered != 'yes':
             return []  # Только зарегистрированные пользователи могут искать
 
-        preferred_gender = current_user.preferred_gender
-        lower_age = current_user.age_lower_point
-        high_age = current_user.age_high_point
-
-        if not all([preferred_gender, lower_age, high_age]):
-            return []  # Нет настроек для поиска
-
         return await self.user_repo.get_candidate_ids(
             tg_chat_id=str(current_user_id),
-            preferred_gender=preferred_gender,
-            age_lower=lower_age,
-            age_upper=high_age,
             limit=settings.CANDIDATES_LIMIT,
         )
 

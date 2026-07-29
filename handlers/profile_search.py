@@ -19,6 +19,16 @@ from utils.telegram import safe_send_message, safe_send_media_group, safe_send_s
 logger = logging.getLogger(__name__)
 
 
+def _optional_profile_lines(profile) -> list:
+    """Строки необязательных полей анкеты; незаполненные поля не печатаются."""
+    return [f"{label}: {escape(value)}"
+            for label, value in (("Статус", profile.status),
+                                 ("Ссылки", profile.links),
+                                 ("Чем могу помочь", profile.can_help),
+                                 ("Что ищу", profile.looking_for))
+            if value]
+
+
 def _mention(username: Optional[str], tg_chat_id: int) -> str:
     """Готовит безопасное для HTML упоминание пользователя."""
     if username:
@@ -60,12 +70,13 @@ class ProfileSearchHandlers:
         else:
             await message.answer("Профиль без фотографий.")
 
-        text = (f"Имя: <b>{escape(profile_data.name)}</b>\n"
-                f"Возраст: {profile_data.age}\n"
-                f"Город: {escape(profile_data.city)}\n\n"
-                f"О себе:\n {escape(profile_data.description)}")
+        lines = [f"Имя: <b>{escape(profile_data.name)}</b>",
+                 f"Роль: {escape(profile_data.role)}",
+                 f"Город: {escape(profile_data.city)}"]
+        lines += _optional_profile_lines(profile_data)
+        lines += ['', f"О себе:\n {escape(profile_data.description)}"]
 
-        await message.answer(text, reply_markup=searching_profiles_keyboard(str(tg_chat_id)))
+        await message.answer("\n".join(lines), reply_markup=searching_profiles_keyboard(str(tg_chat_id)))
         return True
 
     async def _get_next_profile_and_show(self, message: types.Message, state: FSMContext, current_user_id: int):

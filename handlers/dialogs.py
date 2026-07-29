@@ -201,10 +201,16 @@ class DialogHandlers:
         if media_group:
             await safe_send_media_group(message.bot, me, media_group)
 
-        await message.answer(f"Имя: <b>{escape(profile.name)}</b>\n"
-                             f"Возраст: {profile.age}\n"
-                             f"Город: {escape(profile.city)}\n\n"
-                             f"О себе:\n {escape(profile.description)}")
+        lines = [f"Имя: <b>{escape(profile.name)}</b>",
+                 f"Роль: {escape(profile.role)}",
+                 f"Город: {escape(profile.city)}"]
+        # Необязательные поля не печатаем пустыми, иначе профиль станет решетом.
+        if profile.status:
+            lines.append(f"Статус: {escape(profile.status)}")
+        if profile.links:
+            lines.append(f"Ссылки: {escape(profile.links)}")
+        lines.append(f"\nО себе:\n {escape(profile.description)}")
+        await message.answer("\n".join(lines))
 
     async def complain_on_peer(self, message: types.Message, state: FSMContext):
         """Жалоба на собеседника: диалог закрывается сразу, без ввода причины.

@@ -23,7 +23,7 @@ class RoomRepository(BaseRepository):
         чтобы PostgreSQL знал тип параметра при NULL.
         """
         query = """
-        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id,
+        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id, r.thread_id,
                r.member_limit, r.is_active, r.created_at,
                COUNT(m.tg_chat_id) AS member_count
         FROM rooms r
@@ -50,7 +50,7 @@ class RoomRepository(BaseRepository):
 
     async def get(self, room_id: int) -> Optional[Room]:
         query = """
-        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id,
+        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id, r.thread_id,
                r.member_limit, r.is_active, r.created_at,
                (SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id) AS member_count
         FROM rooms r
@@ -59,38 +59,58 @@ class RoomRepository(BaseRepository):
         return await self._fetch_one(query, room_id)
 
     async def get_by_native_chat(self, tg_chat_id: int) -> Optional[Room]:
-        """Комната, к которой уже привязана эта супергруппа."""
+        """Комната, занимающая эту супергруппу целиком.
+
+        thread_id IS NULL обязателен: в супергруппе сообщества комнат много, у
+        каждой свой топик, и все они делят один tg_chat_id. Занятой группа
+        считается только если её забрала комната без топика.
+        """
         query = """
-        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id,
+        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id, r.thread_id,
                r.member_limit, r.is_active, r.created_at,
                (SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id) AS member_count
         FROM rooms r
-        WHERE r.tg_chat_id = $1;
+        WHERE r.tg_chat_id = $1 AND r.thread_id IS NULL
+        ORDER BY r.id
+        LIMIT 1;
         """
         return await self._fetch_one(query, tg_chat_id)
 
     async def create(self, room: Room) -> Room:
         query = """
-        INSERT INTO rooms (interest_id, title, description, mode, tg_chat_id, member_limit, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, interest_id, title, description, mode, tg_chat_id,
+        INSERT INTO rooms (interest_id, title, description, mode, tg_chat_id, thread_id,
+                           member_limit, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id, interest_id, title, description, mode, tg_chat_id, thread_id,
                   member_limit, is_active, created_at;
         """
         record = await self._fetch_one(
             query,
             room.interest_id, room.title, room.description, room.mode,
-            room.tg_chat_id, room.member_limit, room.is_active,
+            room.tg_chat_id, room.thread_id, room.member_limit, room.is_active,
         )
         return record if record else room
 
-    async def bind_native(self, room_id: int, tg_chat_id: int) -> None:
+    async def bind_native(self, room_id: int, tg_chat_id: int,
+                          thread_id: Optional[int] = None) -> None:
         """Привязывает существующую супергруппу к комнате и переводит её в native.
 
         Создать группу бот не может — её создаёт человек и добавляет туда бота
         администратором, поэтому id чата приходит из апдейта, а не из кода.
+        thread_id пишется всегда, в том числе NULL: при перепривязке к другому
+        чату прежний id топика указывал бы в пустоту.
         """
-        query = "UPDATE rooms SET tg_chat_id = $2, mode = 'native' WHERE id = $1;"
-        await self._execute_query(query, room_id, tg_chat_id)
+        query = "UPDATE rooms SET tg_chat_id = $2, thread_id = $3, mode = 'native' WHERE id = $1;"
+        await self._execute_query(query, room_id, tg_chat_id, thread_id)
+
+    async def set_thread(self, room_id: int, thread_id: Optional[int]) -> None:
+        """Проставляет комнате топик, не меняя режим.
+
+        Нужно, когда топик создан отдельно от комнаты (например, первая попытка
+        упёрлась в отсутствие прав у бота и админ повторяет её позже).
+        """
+        query = "UPDATE rooms SET thread_id = $2 WHERE id = $1;"
+        await self._execute_query(query, room_id, thread_id)
 
     async def set_active(self, room_id: int, is_active: bool) -> None:
         query = "UPDATE rooms SET is_active = $2 WHERE id = $1;"
@@ -127,7 +147,7 @@ class RoomRepository(BaseRepository):
 
     async def rooms_of_user(self, tg_chat_id: str) -> List[Room]:
         query = """
-        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id,
+        SELECT r.id, r.interest_id, r.title, r.description, r.mode, r.tg_chat_id, r.thread_id,
                r.member_limit, r.is_active, r.created_at,
                (SELECT COUNT(*) FROM room_members m2 WHERE m2.room_id = r.id) AS member_count
         FROM rooms r

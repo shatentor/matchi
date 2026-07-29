@@ -22,12 +22,21 @@ class Settings:
     _admin_ids_str = os.getenv("ADMIN_IDS", "")
     ADMIN_IDS: List[int] = [int(x.strip()) for x in _admin_ids_str.split(',') if x.strip().isdigit()]
 
-    # Ограничения профиля
-    MIN_AGE: int = int(os.getenv("MIN_AGE", 18))
-    MAX_AGE: int = int(os.getenv("MAX_AGE", 99))
+    # Ограничения профиля. Возраста и пола здесь нет намеренно: закрытая сеть
+    # для знакомых не фильтрует людей по этим признакам.
     MAX_NAME_LENGTH: int = 30
     MAX_DESCRIPTION_LENGTH: int = 1000
     MAX_PHOTOS: int = 3
+    MAX_ROLE_LENGTH: int = 60
+    MAX_STATUS_LENGTH: int = 140
+    MAX_LINKS_LENGTH: int = 300
+    MAX_OFFER_LENGTH: int = 500
+
+    # Инвайты: закрытая сеть, вход только по коду
+    INVITE_CODE_LENGTH: int = int(os.getenv("INVITE_CODE_LENGTH", 8))
+    INVITE_TTL_DAYS: int = int(os.getenv("INVITE_TTL_DAYS", 14))
+    INVITE_MAX_USES: int = int(os.getenv("INVITE_MAX_USES", 3))
+    INVITES_PER_USER: int = int(os.getenv("INVITES_PER_USER", 5))
 
     # Поиск и антиспам
     CANDIDATES_LIMIT: int = int(os.getenv("CANDIDATES_LIMIT", 50))

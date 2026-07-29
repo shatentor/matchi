@@ -47,6 +47,8 @@ MODULES = [
     "models.room", "db.repositories.room_repo", "services.room_service",
     "keyboards.rooms", "handlers.rooms",
     "keyboards.menu", "handlers.menu",
+    "models.invite", "db.repositories.invite_repo", "services.invite_service", "handlers.invites",
+    "models.community", "db.repositories.community_repo", "services.community_service",
     "main",
 ]
 for m in MODULES:
@@ -63,7 +65,7 @@ if FAILURES:
 # ---------- 2. Модели Pydantic v2 ----------
 from models.complain import Complain
 from models.message import Message as MsgModel
-from models.user import User
+from models.user import User, UserProfileData
 
 try:
     Complain(reporter_chat_id="1", reported_chat_id="2", reason="spam")
@@ -157,7 +159,13 @@ is_admin = IsAdmin(admin_service)
 is_feedback = IsFeedbackForCurrentProfile(user_service)
 
 try:
-    r1 = RegistrationHandlers(user_service).get_router()
+    from db.repositories.invite_repo import InviteRepository
+    from handlers.invites import InviteHandlers
+    from services.invite_service import InviteService
+
+    invite_service = InviteService(invite_repo=InviteRepository(pool))
+    r1 = RegistrationHandlers(user_service, invite_service).get_router()
+    r11 = InviteHandlers(invite_service, user_service).get_router(is_registered_filter=is_registered)
     r2 = CommandHandlers(user_service, matching_service, support_service).get_router(
         is_registered_filter=is_registered)
     r3 = ProfileManagementHandlers(user_service).get_router(is_registered_filter=is_registered)
@@ -199,8 +207,13 @@ try:
     dialog_handlers = DialogHandlers(dialog_service=dialog_service, user_service=user_service,
                                      support_service=support_service, interest_service=interest_service,
                                      roulette_service=roulette_service)
+    from db.repositories.community_repo import CommunityRepository
+    from services.community_service import CommunityService
+
+    community_service = CommunityService(community_repo=CommunityRepository(pool))
+    room_service.community_service = community_service
     room_handlers = RoomHandlers(room_service=room_service, interest_service=interest_service,
-                                 user_service=user_service)
+                                 user_service=user_service, community_service=community_service)
     r7 = dialog_handlers.get_router(is_registered_filter=is_registered)
     r8 = room_handlers.get_router(is_registered_filter=is_registered, is_admin_filter=is_admin)
     r9 = build_errors_router()
@@ -210,11 +223,12 @@ try:
         dialog_handlers=dialog_handlers,
         room_handlers=room_handlers,
         interest_handlers=interest_handlers,
+        dialog_service=dialog_service,
     ).get_router(is_registered_filter=is_registered)
 
     # Порядок обязан совпадать с main.py: он определяет, какой роутер
     # перехватывает апдейт первым, и без этого имитация роутинга обманывает.
-    built = (r1, r10, r2, r3, r4, r6, r7, r8, r5, r9)
+    built = (r1, r10, r2, r3, r4, r6, r11, r7, r8, r5, r9)
     for r in built:
         dp.include_router(r)
     counts = {r.name: (len(r.message.handlers), len(r.callback_query.handlers)) for r in built}
@@ -311,8 +325,7 @@ async def test_matching_sql():
 
     class Repo(UserRepository):
         async def get_by_id(self, tg_chat_id):
-            return User(tg_chat_id=tg_chat_id, is_registered="yes", preferred_gender="Any",
-                        age_lower_point=20, age_high_point=30)
+            return User(tg_chat_id=tg_chat_id, is_registered="yes", role="backend, Python")
 
     ms = MatchingService(user_repo=Repo(pool), like_repo=like_repo,
                          dislike_repo=dislike_repo, sticker_repo=sticker_repo)
@@ -343,8 +356,8 @@ check("escape экранирует < & >", escape('<b>x</b> & "q"') == '&lt;b&gt
 check("escape(None) == ''", escape(None) == "")
 
 # ---------- 6. Клавиатуры ----------
-from keyboards.inline import (admin_keyboard, change_profile_keyboard, city_keyboard, gender_keyboard,
-                              photo_management_keyboard, preferred_gender_keyboard, searching_profiles_keyboard,
+from keyboards.inline import (admin_keyboard, change_profile_keyboard, city_keyboard,
+                              photo_management_keyboard, searching_profiles_keyboard,
                               start_keyboard, start_show_profiles, yes_or_no_keyboard)
 
 kb = photo_management_keyboard(User(tg_chat_id="1", photo_link="a", photo_link_two="b"))
@@ -353,7 +366,7 @@ pairs_ok = all(len(row) == 2 for row in kb.inline_keyboard[:2])
 check("photo_management_keyboard: пары Изменить/Удалить в своих рядах", pairs_ok, str(rows))
 adm = [[b.callback_data for b in row] for row in admin_keyboard().inline_keyboard]
 check("admin_keyboard содержит show_complains", any("show_complains" in r for r in adm), str(adm))
-for fn in (start_keyboard, gender_keyboard, preferred_gender_keyboard, change_profile_keyboard, start_show_profiles):
+for fn in (start_keyboard, change_profile_keyboard, start_show_profiles):
     fn()
 searching_profiles_keyboard("123")
 yes_or_no_keyboard("123")
@@ -369,14 +382,31 @@ check("Berln -> Berlin", "Berlin" in get_relevant_cities("Berln"), str(get_relev
 check("мусор -> []", get_relevant_cities("qqqqqq") == [] and get_relevant_cities("") == [])
 check("full_coincidence игнорирует регистр и пробелы", full_coincidence("  paris ") == "Paris")
 
-# ---------- 8. Возрастные ограничения ----------
+# ---------- 8. Дейтинговые поля вычищены, профиль v2 на месте ----------
 from config.settings import settings
 
-src_reg = (PROJECT_ROOT / "handlers/registration.py").read_text()
-src_pm = (PROJECT_ROOT / "handlers/profile_management.py").read_text()
-check("MIN_AGE == 18", settings.MIN_AGE == 18, str(settings.MIN_AGE))
-check("хардкод возраста 10/100 убран из хендлеров",
-      not re.search(r"10\s*<\s*\w*age\w*\s*<\s*100", src_reg + src_pm) and "< 100" not in src_reg + src_pm)
+DATING_FIELDS = ("age", "gender", "preferred_gender", "age_lower_point", "age_high_point")
+PROFILE_V2_FIELDS = ("role", "status", "links", "can_help", "looking_for")
+
+check("в модели User нет дейтинговых полей",
+      not [f for f in DATING_FIELDS if f in User.model_fields],
+      str([f for f in DATING_FIELDS if f in User.model_fields]))
+check("в модели User есть поля профиля v2",
+      all(f in User.model_fields for f in PROFILE_V2_FIELDS),
+      str([f for f in PROFILE_V2_FIELDS if f not in User.model_fields]))
+check("в UserProfileData нет возраста и пола",
+      not [f for f in (*DATING_FIELDS, "age_range") if f in UserProfileData.model_fields])
+
+# Обращения к удалённым полям упадут только в рантайме, поэтому ищем их по коду.
+code_files = sorted(p for p in PROJECT_ROOT.rglob("*.py")
+                    if "venv" not in str(p) and p.resolve() != pathlib.Path(__file__).resolve())
+stale = []
+for p in code_files:
+    text = p.read_text()
+    for field in DATING_FIELDS:
+        if re.search(rf"\b(user|profile|profile_data|user_profile_data)\.{field}\b", text):
+            stale.append(f"{p.relative_to(PROJECT_ROOT)}: .{field}")
+check("нигде не читаются удалённые поля профиля", not stale, str(stale))
 
 # ---------- 9. Отсутствие обращений к settings.Settings ----------
 proj = PROJECT_ROOT
@@ -426,8 +456,6 @@ except ImportError:
 # видно только сверкой литералов со схемой.
 COLUMN_LITERALS = {
     "is_registered": ["no", "yes", "in_progress"],
-    "gender": ["Male", "Female", "Other"],
-    "preferred_gender": ["Male", "Female", "Any"],
     "mode": ["relay", "native"],
     "source": ["profile", "roulette"],
 }

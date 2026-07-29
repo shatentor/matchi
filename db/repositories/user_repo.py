@@ -13,17 +13,16 @@ class UserRepository(BaseRepository):
 
     async def create(self, user: User) -> User:
         query = """
-        INSERT INTO users (tg_chat_id, tg_username, name, age, city, gender, photo_link,
-                           photo_link_two, photo_link_three, preferred_gender,
-                           age_lower_point, age_high_point, last_shown_profile,
-                           support_time, is_registered)
+        INSERT INTO users (tg_chat_id, tg_username, name, city, role, status, links,
+                           can_help, looking_for, photo_link, photo_link_two,
+                           photo_link_three, last_shown_profile, support_time, is_registered)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING *;
         """
         record = await self._fetch_one(query,
-            user.tg_chat_id, user.tg_username, user.name, user.age, user.city, user.gender,
-            user.photo_link, user.photo_link_two, user.photo_link_three, user.preferred_gender,
-            user.age_lower_point, user.age_high_point, user.last_shown_profile,
+            user.tg_chat_id, user.tg_username, user.name, user.city, user.role,
+            user.status, user.links, user.can_help, user.looking_for, user.photo_link,
+            user.photo_link_two, user.photo_link_three, user.last_shown_profile,
             user.support_time, user.is_registered
         )
         return record if record else user
@@ -36,17 +35,17 @@ class UserRepository(BaseRepository):
     async def update(self, user: User) -> User:
         query = """
         UPDATE users
-        SET tg_username = $2, name = $3, age = $4, city = $5, gender = $6,
-            photo_link = $7, photo_link_two = $8, photo_link_three = $9,
-            preferred_gender = $10, age_lower_point = $11, age_high_point = $12,
-            last_shown_profile = $13, support_time = $14, is_registered = $15
+        SET tg_username = $2, name = $3, city = $4, role = $5, status = $6, links = $7,
+            can_help = $8, looking_for = $9, photo_link = $10, photo_link_two = $11,
+            photo_link_three = $12, last_shown_profile = $13, support_time = $14,
+            is_registered = $15
         WHERE tg_chat_id = $1
         RETURNING *;
         """
         record = await self._fetch_one(query,
-            user.tg_chat_id, user.tg_username, user.name, user.age, user.city, user.gender,
-            user.photo_link, user.photo_link_two, user.photo_link_three, user.preferred_gender,
-            user.age_lower_point, user.age_high_point, user.last_shown_profile,
+            user.tg_chat_id, user.tg_username, user.name, user.city, user.role,
+            user.status, user.links, user.can_help, user.looking_for, user.photo_link,
+            user.photo_link_two, user.photo_link_three, user.last_shown_profile,
             user.support_time, user.is_registered
         )
         return record if record else user
@@ -56,8 +55,7 @@ class UserRepository(BaseRepository):
         records = await self.pool.fetch(query)
         return [r['tg_chat_id'] for r in records]
 
-    async def get_candidate_ids(self, tg_chat_id: str, preferred_gender: str,
-                                age_lower: int, age_upper: int, limit: int) -> List[str]:
+    async def get_candidate_ids(self, tg_chat_id: str, limit: int) -> List[str]:
         """Возвращает список ID анкет, подходящих пользователю.
 
         Отбор целиком выполняется в БД: одним запросом вместо выборки всех
@@ -78,8 +76,6 @@ class UserRepository(BaseRepository):
         FROM users u
         WHERE u.is_registered = 'yes'
           AND u.tg_chat_id <> $1
-          AND u.age BETWEEN $2 AND $3
-          AND ($4 = 'Any' OR u.gender = $4)
           AND EXISTS (SELECT 1 FROM descriptions d WHERE d.tg_chat_id = u.tg_chat_id
                       AND d.descr IS NOT NULL AND d.descr <> '')
           AND NOT EXISTS (SELECT 1 FROM likes l
@@ -87,9 +83,9 @@ class UserRepository(BaseRepository):
           AND NOT EXISTS (SELECT 1 FROM dislikes dl
                           WHERE dl.disliker_chat_id = $1 AND dl.disliked_chat_id = u.tg_chat_id)
         ORDER BY common DESC, RANDOM()
-        LIMIT $5;
+        LIMIT $2;
         """
-        records = await self.pool.fetch(query, tg_chat_id, age_lower, age_upper, preferred_gender, limit)
+        records = await self.pool.fetch(query, tg_chat_id, limit)
         return [r['tg_chat_id'] for r in records]
 
     async def update_username(self, tg_chat_id: str, username: Optional[str]) -> None:

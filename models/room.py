@@ -4,10 +4,13 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 from config.settings import settings
+from models.community import topic_link
 
 # Режимы комнаты. relay — бот сам разносит сообщения участникам через Outbox;
-# native — комната это реальная супергруппа Telegram (её id в Room.tg_chat_id),
-# доставку берёт на себя Telegram, бот только выдаёт ссылку-приглашение.
+# native — комната живёт в реальной супергруппе Telegram (её id в
+# Room.tg_chat_id), доставку берёт на себя Telegram, бот только выдаёт
+# ссылку-приглашение. Основной вид native-комнаты — форум-топик закрытой
+# супергруппы сообщества (тогда заполнен и thread_id).
 ROOM_MODE_RELAY = "relay"
 ROOM_MODE_NATIVE = "native"
 ROOM_MODES = (ROOM_MODE_RELAY, ROOM_MODE_NATIVE)
@@ -23,6 +26,10 @@ class Room(BaseModel):
     tg_chat_id — id супергруппы (BIGINT) для режима native, а НЕ пользователь;
     у пользователей tg_chat_id хранится строкой, здесь это число.
 
+    thread_id — id форум-топика внутри этой супергруппы. NULL означает, что
+    комната занимает всю группу целиком (старая привязка через /room_bind) или
+    что режим relay.
+
     member_count заполняется запросами, которые считают участников вместе со
     списком комнат (одним запросом на весь каталог, без N+1). Своей колонки в
     таблице у него нет, поэтому значение по умолчанию — 0.
@@ -35,6 +42,7 @@ class Room(BaseModel):
     description: Optional[str] = None
     mode: str = ROOM_MODE_RELAY
     tg_chat_id: Optional[int] = None
+    thread_id: Optional[int] = None
     member_limit: int = settings.ROOM_MEMBER_LIMIT
     is_active: bool = True
     created_at: Optional[datetime] = None
@@ -43,6 +51,16 @@ class Room(BaseModel):
     @property
     def is_native(self) -> bool:
         return self.mode == ROOM_MODE_NATIVE
+
+    @property
+    def is_topic(self) -> bool:
+        """Комната живёт как форум-топик внутри супергруппы сообщества."""
+        return bool(self.tg_chat_id and self.thread_id)
+
+    @property
+    def topic_url(self) -> Optional[str]:
+        """Ссылка на топик комнаты; None, если комната не топик."""
+        return topic_link(self.tg_chat_id, self.thread_id)
 
 
 class RoomMember(BaseModel):

@@ -2,11 +2,17 @@ from typing import Optional, List, Any
 from models.user import User, UserProfileData
 from db.repositories.user_repo import UserRepository
 from db.repositories.like_repo import LikeRepository
-from aiogram.types import InputMediaPhoto # ИМПОРТИРОВАНО InputMediaPhoto
+from aiogram.types import InputMediaPhoto
 import time
 
 
 class UserService:
+    # Поля с собственным точечным UPDATE в репозитории: их нельзя писать полной
+    # перезаписью строки, остальные (name, city, role, status, links, can_help,
+    # looking_for, tg_username) идут общим путём через UserRepository.update.
+    DEDICATED_FIELDS = ("description", "photo_link", "photo_link_two", "photo_link_three",
+                        "support_time", "last_shown_profile", "is_registered")
+
     def __init__(self, user_repo: UserRepository):
         self.user_repo = user_repo
 
@@ -53,10 +59,7 @@ class UserService:
             setattr(user, field_name, new_value)
             user = await self.user_repo.update(user)
 
-        if field_name not in ["description", "photo_link", "photo_link_two", "photo_link_three", "support_time",
-                              "last_shown_profile", "is_registered"]:
-            user = await self.user_repo.get_by_id(str(tg_chat_id))
-        elif field_name == "is_registered":
+        if field_name not in self.DEDICATED_FIELDS or field_name == "is_registered":
             user = await self.user_repo.get_by_id(str(tg_chat_id))
 
         return user
@@ -67,8 +70,8 @@ class UserService:
             return None
         description = await self.user_repo.get_description(str(tg_chat_id))
 
-        if not all([user.name, user.age, user.city, user.gender, user.preferred_gender,
-                    user.age_lower_point, user.age_high_point, description]):
+        # Обязательный минимум профиля: без него анкету нечего показывать
+        if not all([user.name, user.city, user.role, description]):
             return None
 
         photo_ids = [pid for pid in [user.photo_link, user.photo_link_two, user.photo_link_three] if pid]
@@ -77,16 +80,17 @@ class UserService:
             tg_chat_id=user.tg_chat_id,
             tg_username=user.tg_username,
             name=user.name,
-            age=user.age,
             city=user.city,
-            gender=user.gender,
+            role=user.role,
             description=description,
-            preferred_gender=user.preferred_gender,
-            age_range=f"{user.age_lower_point}-{user.age_high_point}",
+            status=user.status,
+            links=user.links,
+            can_help=user.can_help,
+            looking_for=user.looking_for,
             photo_ids=photo_ids
         )
 
-    async def get_user_media_group(self, tg_chat_id: int) -> List[InputMediaPhoto]: # ВОЗВРАЩАЕТ СПИСОК InputMediaPhoto
+    async def get_user_media_group(self, tg_chat_id: int) -> List[InputMediaPhoto]:
         user = await self.user_repo.get_by_id(str(tg_chat_id))
         media_group_photos = []
         if user and user.photo_link:

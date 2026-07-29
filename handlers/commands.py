@@ -20,6 +20,19 @@ from aiogram.types import InputMediaPhoto
 logger = logging.getLogger(__name__)
 
 
+def _optional_profile_lines(profile: UserProfileData, bold: bool = False) -> list:
+    """Строки необязательных полей анкеты; незаполненные поля не печатаются."""
+    lines = []
+    for label, value in (("Статус", profile.status),
+                         ("Ссылки", profile.links),
+                         ("Чем могу помочь", profile.can_help),
+                         ("Что ищу", profile.looking_for)):
+        if value:
+            title = f"<b>{label}</b>" if bold else label
+            lines.append(f"{title}: {escape(value)}")
+    return lines
+
+
 class CommandsStates(StatesGroup):
     support_message = State()
 
@@ -36,9 +49,9 @@ class CommandHandlers:
         user_status = await self.user_service.get_registration_status(tg_chat_id)
 
         if user_status is None or user_status == "no":
-            await message.answer('Привет🙋! Это <b>Matchi</b> - бот для знакомств. \n\n'
+            await message.answer('Привет🙋! Это <b>Matchi</b> — закрытая сеть для своих. \n\n'
                                  'Здесь вы можете найти интересных людей. \n'
-                                 'Сначала вам нужно ответить на несколько вопросов.',
+                                 'Вход только по приглашению: понадобится код от того, кто вас позвал.',
                                  reply_markup=start_keyboard())
         elif user_status == "yes":
             await message.answer('Вы уже зарегистрированы.')
@@ -60,17 +73,15 @@ class CommandHandlers:
             await message.answer("Ваш профиль еще не полностью заполнен или не существует.")
             return
 
-        text = (f'<b>Ваш профиль</b>:\n\n'
-                f' <b>Имя</b>: {escape(user_profile_data.name)}\n'
-                f' <b>Возраст</b>: {user_profile_data.age}\n'
-                f' <b>Город</b>: {escape(user_profile_data.city)}\n'
-                f' <b>Пол</b>: {escape(user_profile_data.gender)}\n'
-                f' <b>Предпочитаемый пол</b>: {escape(user_profile_data.preferred_gender)}\n'
-                f' <b>Предпочитаемый возраст</b>: {escape(user_profile_data.age_range)}\n\n'
-                f'<b>Описание</b>:\n'
-                f'  {escape(user_profile_data.description)}')
+        lines = [f'<b>Ваш профиль</b>:',
+                 '',
+                 f' <b>Имя</b>: {escape(user_profile_data.name)}',
+                 f' <b>Роль</b>: {escape(user_profile_data.role)}',
+                 f' <b>Город</b>: {escape(user_profile_data.city)}']
+        lines += [f' {line}' for line in _optional_profile_lines(user_profile_data, bold=True)]
+        lines += ['', '<b>Описание</b>:', f'  {escape(user_profile_data.description)}']
 
-        await message.answer(text)
+        await message.answer("\n".join(lines))
 
         media_group_photos = await self.user_service.get_user_media_group(tg_chat_id)
         if media_group_photos:
@@ -137,13 +148,14 @@ class CommandHandlers:
         contact = f"@{escape(user_profile_data.tg_username)}" if user_profile_data.tg_username \
             else "скрыто"
 
-        text = (f"Имя: {escape(user_profile_data.name)}\n"
-                f"Возраст: {user_profile_data.age}\n"
-                f"Город: {escape(user_profile_data.city)}\n\n"
-                f"О себе:\n {escape(user_profile_data.description)}\n\n"
-                f"Имя пользователя: {contact}")
+        lines = [f"Имя: {escape(user_profile_data.name)}",
+                 f"Роль: {escape(user_profile_data.role)}",
+                 f"Город: {escape(user_profile_data.city)}"]
+        lines += _optional_profile_lines(user_profile_data)
+        lines += ['', f"О себе:\n {escape(user_profile_data.description)}",
+                  '', f"Имя пользователя: {contact}"]
 
-        await current_message.answer(text)
+        await current_message.answer("\n".join(lines))
 
     async def show_mutual_liked(self, message: types.Message):
         tg_chat_id = message.chat.id

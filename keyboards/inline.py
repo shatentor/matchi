@@ -10,15 +10,6 @@ def start_keyboard():
     return builder.as_markup()
 
 
-def gender_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text='M👨', callback_data='Male')
-    builder.button(text='F👩', callback_data='Female')
-    builder.button(text='Other🏳‍🌈', callback_data='Other')
-    builder.adjust(3) # Распределит кнопки по 3 в ряд
-    return builder.as_markup()
-
-
 def admin_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text='Message to all users', callback_data='message_to_all')
@@ -28,15 +19,18 @@ def admin_keyboard():
 
 
 def change_profile_keyboard():
+    # Только button() + adjust(): adjust() пересобирает разметку из плоского
+    # списка кнопок, поэтому смешивать его с явными row() здесь нельзя
     builder = InlineKeyboardBuilder()
-    builder.button(text="Name📛", callback_data="change_name")
-    builder.button(text="Gender 🌓", callback_data="change_gender")
-    builder.button(text="City🏙", callback_data="change_city")
-    builder.button(text="Age🧓", callback_data="change_age")
-    builder.button(text="Description🗒", callback_data="change_description")
-    builder.button(text="Photos📸", callback_data="change_photo")
-    builder.button(text="Preferred gender💕", callback_data="change_preferred_gender")
-    builder.button(text="Preferred age", callback_data="change_preferred_age")
+    builder.button(text="Имя📛", callback_data="change_name")
+    builder.button(text="Город🏙", callback_data="change_city")
+    builder.button(text="Роль💼", callback_data="change_role")
+    builder.button(text="Статус📌", callback_data="change_status")
+    builder.button(text="Ссылки🔗", callback_data="change_links")
+    builder.button(text="Описание🗒", callback_data="change_description")
+    builder.button(text="Чем могу помочь🤝", callback_data="change_can_help")
+    builder.button(text="Что ищу🔍", callback_data="change_looking_for")
+    builder.button(text="Фото📸", callback_data="change_photo")
     builder.adjust(2) # Распределит кнопки по 2 в ряд
     return builder.as_markup()
 
@@ -76,15 +70,6 @@ def photo_management_keyboard(user: User):
     elif not has_photo_three:
         builder.row(types.InlineKeyboardButton(text="Добавить фото", callback_data="add_photo_three"))
 
-    return builder.as_markup()
-
-
-def preferred_gender_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text='M👨', callback_data='Male')
-    builder.button(text='F👩', callback_data='Female')
-    builder.button(text='Any💛', callback_data='Any')
-    builder.adjust(3)
     return builder.as_markup()
 
 

@@ -1,38 +1,57 @@
 import logging
-from aiogram import Dispatcher, types, Router, F
+from aiogram import types, Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter
-from typing import Tuple, Optional
+from aiogram.filters import StateFilter
 from config.settings import settings
 from services.user_service import UserService
-from keyboards.inline import gender_keyboard, preferred_gender_keyboard, city_keyboard, photo_management_keyboard
+from keyboards.inline import city_keyboard, photo_management_keyboard
 from utils.cities_functions import full_coincidence, get_relevant_cities
-from models.user import User
 from filters.custom_filters import IsRegistered
-from aiogram.types import InputMediaPhoto
 
 logger = logging.getLogger(__name__)
+
+# Строка, которой пользователь очищает необязательное поле профиля:
+# иначе заполненный статус или ссылки нельзя было бы убрать
+CLEAR_MARK = "-"
 
 
 class ChangeProfileStates(StatesGroup):
     name_changing = State()
-    age_changing = State()
     city_changing = State()
     city_mistake = State()
-    gender_changing = State()
+    role_changing = State()
+    status_changing = State()
+    links_changing = State()
     description_changing = State()
+    can_help_changing = State()
+    looking_for_changing = State()
     photo_selection = State()
     photo_changing = State()
-    preferred_gender_changing = State()
-    preferred_age_lower = State()
-    preferred_age_upper = State()
 
 
 class ProfileManagementHandlers:
     def __init__(self, user_service: UserService):
         self.user_service = user_service
         self.router = Router()
+
+    async def _save_optional_field(self, message: types.Message, state: FSMContext,
+                                   field_name: str, limit: int, label: str):
+        """Сохраняет необязательное текстовое поле профиля, «-» очищает его."""
+        tg_chat_id = message.chat.id
+        value = message.text.strip()
+
+        if len(value) > limit:
+            await message.answer(f"Лимит превышен (максимум {limit} символов).\nПопробуйте еще раз:")
+            return
+
+        if value == CLEAR_MARK:
+            await self.user_service.update_user_profile_field(tg_chat_id, field_name, None)
+            await message.answer(f"{label}: поле очищено.")
+        else:
+            await self.user_service.update_user_profile_field(tg_chat_id, field_name, value)
+            await message.answer(f"{label}: изменено.")
+        await state.clear()
 
     async def change_name_button(self, call: types.CallbackQuery, state: FSMContext):
         await call.message.answer("Введите новое имя:")
@@ -53,31 +72,6 @@ class ProfileManagementHandlers:
     async def new_name_invalid(self, message: types.Message, state: FSMContext):
         # Пришло не текстовое сообщение: len(None) упал бы в основном хендлере
         await message.answer("Вы сейчас меняете имя. Пожалуйста, пришлите новое имя текстом:")
-
-    async def change_age_button(self, call: types.CallbackQuery, state: FSMContext):
-        await call.message.answer("Введите ваш возраст:")
-        await state.set_state(ChangeProfileStates.age_changing)
-        await call.answer()
-
-    async def new_age_to_db(self, message: types.Message, state: FSMContext):
-        tg_chat_id = message.chat.id
-        try:
-            age = int(message.text)
-            if settings.MIN_AGE <= age <= settings.MAX_AGE:
-                await self.user_service.update_user_profile_field(tg_chat_id, "age", age)
-                await message.answer("Возраст успешно изменен.")
-                await state.clear()
-            else:
-                await message.answer(f"Укажите ваш возраст (от {settings.MIN_AGE} до {settings.MAX_AGE}):")
-                await state.set_state(ChangeProfileStates.age_changing)
-        except ValueError:
-            await message.answer("Пожалуйста, введите целое число.\nПопробуйте еще раз:")
-            await state.set_state(ChangeProfileStates.age_changing)
-
-    async def new_age_invalid(self, message: types.Message, state: FSMContext):
-        # int(None) дал бы TypeError, который не ловится в основном хендлере
-        await message.answer(f"Вы сейчас меняете возраст. Пожалуйста, напишите его числом "
-                             f"(от {settings.MIN_AGE} до {settings.MAX_AGE}):")
 
     async def change_city_button(self, call: types.CallbackQuery, state: FSMContext):
         await call.message.answer("Введите новый город:")
@@ -115,19 +109,6 @@ class ProfileManagementHandlers:
     async def city_mistake_invalid(self, message: types.Message, state: FSMContext):
         await message.answer("Выберите город кнопкой ниже или напишите название текстом:")
 
-    async def gender_changing_invalid(self, message: types.Message, state: FSMContext):
-        await message.answer("Пожалуйста, выберите ваш пол кнопкой ниже:", reply_markup=gender_keyboard())
-
-    async def preferred_gender_changing_invalid(self, message: types.Message, state: FSMContext):
-        await message.answer("Пожалуйста, выберите предпочитаемый пол кнопкой ниже:",
-                             reply_markup=preferred_gender_keyboard())
-
-    async def photo_selection_invalid(self, message: types.Message, state: FSMContext):
-        await message.answer("Выберите действие с фотографиями кнопкой выше.")
-
-    async def photo_changing_invalid(self, message: types.Message, state: FSMContext):
-        await message.answer("Пожалуйста, отправьте фотографию.")
-
     async def city_mistake_button(self, call: types.CallbackQuery, state: FSMContext):
         message = call.message
         tg_chat_id = call.from_user.id
@@ -141,18 +122,60 @@ class ProfileManagementHandlers:
             await state.clear()
         await call.answer()
 
-    async def change_gender_button(self, call: types.CallbackQuery, state: FSMContext):
-        await call.message.answer("Выберите ваш пол:", reply_markup=gender_keyboard())
-        await state.set_state(ChangeProfileStates.gender_changing)
+    async def change_role_button(self, call: types.CallbackQuery, state: FSMContext):
+        await call.message.answer(f"Кем вы работаете и с чем? Например: «backend, Python» "
+                                  f"(лимит — {settings.MAX_ROLE_LENGTH} символов):")
+        await state.set_state(ChangeProfileStates.role_changing)
         await call.answer()
 
-    async def new_gender_to_db(self, call: types.CallbackQuery, state: FSMContext):
-        tg_chat_id = call.from_user.id
-        gender = call.data
-        await self.user_service.update_user_profile_field(tg_chat_id, "gender", gender)
-        await call.message.answer("Пол успешно изменен.")
+    async def new_role_to_db(self, message: types.Message, state: FSMContext):
+        tg_chat_id = message.chat.id
+        role = message.text.strip()
+
+        # Роль — обязательная часть профиля, очистить её нельзя
+        if not role:
+            await message.answer("Роль не может быть пустой. Напишите, кем вы работаете:")
+            return
+        if len(role) > settings.MAX_ROLE_LENGTH:
+            await message.answer(f"Лимит превышен (максимум {settings.MAX_ROLE_LENGTH} символов).\n"
+                                 f"Попробуйте еще раз:")
+            return
+
+        await self.user_service.update_user_profile_field(tg_chat_id, "role", role)
+        await message.answer("Роль успешно изменена.")
         await state.clear()
+
+    async def new_role_invalid(self, message: types.Message, state: FSMContext):
+        # Роль должна быть текстом, иначе .strip() упадёт на None
+        await message.answer(f"Вы сейчас меняете роль. Пожалуйста, напишите её текстом "
+                             f"(лимит — {settings.MAX_ROLE_LENGTH} символов):")
+
+    async def change_status_button(self, call: types.CallbackQuery, state: FSMContext):
+        await call.message.answer(f"Чем вы сейчас заняты? (лимит — {settings.MAX_STATUS_LENGTH} символов, "
+                                  f"«{CLEAR_MARK}» — убрать статус):")
+        await state.set_state(ChangeProfileStates.status_changing)
         await call.answer()
+
+    async def new_status_to_db(self, message: types.Message, state: FSMContext):
+        await self._save_optional_field(message, state, "status", settings.MAX_STATUS_LENGTH, "Статус")
+
+    async def new_status_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer(f"Вы сейчас меняете статус. Пожалуйста, пришлите его текстом "
+                            f"(лимит — {settings.MAX_STATUS_LENGTH} символов, «{CLEAR_MARK}» — убрать):")
+
+    async def change_links_button(self, call: types.CallbackQuery, state: FSMContext):
+        await call.message.answer(f"Пришлите ваши ссылки: github, сайт, канал "
+                                  f"(лимит — {settings.MAX_LINKS_LENGTH} символов, "
+                                  f"«{CLEAR_MARK}» — убрать ссылки):")
+        await state.set_state(ChangeProfileStates.links_changing)
+        await call.answer()
+
+    async def new_links_to_db(self, message: types.Message, state: FSMContext):
+        await self._save_optional_field(message, state, "links", settings.MAX_LINKS_LENGTH, "Ссылки")
+
+    async def new_links_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer(f"Вы сейчас меняете ссылки. Пожалуйста, пришлите их текстом "
+                            f"(лимит — {settings.MAX_LINKS_LENGTH} символов, «{CLEAR_MARK}» — убрать):")
 
     async def change_description_button(self, call: types.CallbackQuery, state: FSMContext):
         await call.message.answer("Введите новое описание профиля:")
@@ -171,9 +194,41 @@ class ProfileManagementHandlers:
         await state.clear()
 
     async def new_description_invalid(self, message: types.Message, state: FSMContext):
-        # Описание должно быть текстом, иначе len(None) упадет
+        # Описание должно быть текстом, иначе len(None) упадёт
         await message.answer(f"Вы сейчас меняете описание. Пожалуйста, пришлите его текстом "
                              f"(лимит — {settings.MAX_DESCRIPTION_LENGTH} символов):")
+
+    async def change_can_help_button(self, call: types.CallbackQuery, state: FSMContext):
+        await call.message.answer(f"Чем вы можете помочь другим? (лимит — {settings.MAX_OFFER_LENGTH} символов, "
+                                  f"«{CLEAR_MARK}» — убрать):")
+        await state.set_state(ChangeProfileStates.can_help_changing)
+        await call.answer()
+
+    async def new_can_help_to_db(self, message: types.Message, state: FSMContext):
+        await self._save_optional_field(message, state, "can_help", settings.MAX_OFFER_LENGTH, "«Чем могу помочь»")
+
+    async def new_can_help_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer(f"Вы сейчас меняете «чем могу помочь». Пожалуйста, пришлите текст "
+                            f"(лимит — {settings.MAX_OFFER_LENGTH} символов, «{CLEAR_MARK}» — убрать):")
+
+    async def change_looking_for_button(self, call: types.CallbackQuery, state: FSMContext):
+        await call.message.answer(f"Что вы ищете в сети? (лимит — {settings.MAX_OFFER_LENGTH} символов, "
+                                  f"«{CLEAR_MARK}» — убрать):")
+        await state.set_state(ChangeProfileStates.looking_for_changing)
+        await call.answer()
+
+    async def new_looking_for_to_db(self, message: types.Message, state: FSMContext):
+        await self._save_optional_field(message, state, "looking_for", settings.MAX_OFFER_LENGTH, "«Что ищу»")
+
+    async def new_looking_for_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer(f"Вы сейчас меняете «что ищу». Пожалуйста, пришлите текст "
+                            f"(лимит — {settings.MAX_OFFER_LENGTH} символов, «{CLEAR_MARK}» — убрать):")
+
+    async def photo_selection_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer("Выберите действие с фотографиями кнопкой выше.")
+
+    async def photo_changing_invalid(self, message: types.Message, state: FSMContext):
+        await message.answer("Пожалуйста, отправьте фотографию.")
 
     async def change_photo_button(self, call: types.CallbackQuery, state: FSMContext):
         tg_chat_id = call.from_user.id
@@ -252,71 +307,6 @@ class ProfileManagementHandlers:
 
         await state.clear()
 
-    async def change_preferred_gender_button(self, call: types.CallbackQuery, state: FSMContext):
-        await call.message.answer("Выберите предпочитаемый пол:", reply_markup=preferred_gender_keyboard())
-        await state.set_state(ChangeProfileStates.preferred_gender_changing)
-        await call.answer()
-
-    async def new_preferred_gender_to_db(self, call: types.CallbackQuery, state: FSMContext):
-        tg_chat_id = call.from_user.id
-        preferred_gender = call.data
-        await self.user_service.update_user_profile_field(tg_chat_id, "preferred_gender", preferred_gender)
-        await call.message.answer("Предпочитаемый пол успешно изменен.")
-        await state.clear()
-        await call.answer()
-
-    async def change_preferred_age_button(self, call: types.CallbackQuery, state: FSMContext):
-        await call.message.answer("Введите нижний предел вашего предпочитаемого возраста:")
-        await state.set_state(ChangeProfileStates.preferred_age_lower)
-        await call.answer()
-
-    async def lower_age_point_to_db(self, message: types.Message, state: FSMContext):
-        tg_chat_id = message.chat.id
-        try:
-            lower_point = int(message.text)
-            if settings.MIN_AGE <= lower_point <= settings.MAX_AGE:
-                await self.user_service.update_user_profile_field(tg_chat_id, "age_lower_point", lower_point)
-                await message.answer("Введите верхний предел вашего предпочитаемого возраста:")
-                await state.set_state(ChangeProfileStates.preferred_age_upper)
-            else:
-                await message.answer(f"Введите число от {settings.MIN_AGE} до {settings.MAX_AGE}:")
-                await state.set_state(ChangeProfileStates.preferred_age_lower)
-        except ValueError:
-            await message.answer("Пожалуйста, введите целое число.\nПопробуйте еще раз:")
-            await state.set_state(ChangeProfileStates.preferred_age_lower)
-
-    async def lower_age_point_invalid(self, message: types.Message, state: FSMContext):
-        await message.answer(f"Вы сейчас меняете предпочитаемый возраст. Пожалуйста, напишите числом "
-                             f"его нижний предел (от {settings.MIN_AGE} до {settings.MAX_AGE}):")
-
-    async def high_age_point_to_db(self, message: types.Message, state: FSMContext):
-        tg_chat_id = message.chat.id
-        user = await self.user_service.get_user_by_id(tg_chat_id)
-        lower_age_point = user.age_lower_point if user else None
-
-        if lower_age_point is None:
-            await message.answer("Произошла ошибка при получении нижнего предела возраста. Попробуйте начать сначала.")
-            await state.clear()
-            return
-
-        try:
-            high_point = int(message.text)
-            if settings.MIN_AGE <= high_point <= settings.MAX_AGE and high_point >= lower_age_point:
-                await self.user_service.update_user_profile_field(tg_chat_id, "age_high_point", high_point)
-                await message.answer("Предпочитаемый возраст успешно изменен.")
-                await state.clear()
-            else:
-                await message.answer(f"Введите число от {settings.MIN_AGE} до {settings.MAX_AGE} "
-                                     f"и больше или равное {lower_age_point}:")
-                await state.set_state(ChangeProfileStates.preferred_age_upper)
-        except ValueError:
-            await message.answer("Пожалуйста, введите целое число.\nПопробуйте еще раз:")
-            await state.set_state(ChangeProfileStates.preferred_age_upper)
-
-    async def high_age_point_invalid(self, message: types.Message, state: FSMContext):
-        await message.answer(f"Вы сейчас меняете предпочитаемый возраст. Пожалуйста, напишите числом "
-                             f"его верхний предел (от {settings.MIN_AGE} до {settings.MAX_AGE}):")
-
     def get_router(self, is_registered_filter: IsRegistered) -> Router:
         # not_command нужен, чтобы команды не съедались хендлерами состояний,
         # а доходили до роутеров ниже по цепочке (/searchi, /admin, /complains) —
@@ -332,13 +322,6 @@ class ProfileManagementHandlers:
         self.router.message.register(self.new_name_invalid, StateFilter(ChangeProfileStates.name_changing),
                                      not_command)
 
-        self.router.callback_query.register(self.change_age_button, F.data == "change_age",
-                                            is_registered_filter)
-        self.router.message.register(self.new_age_to_db, StateFilter(ChangeProfileStates.age_changing), F.text,
-                                     not_command)
-        self.router.message.register(self.new_age_invalid, StateFilter(ChangeProfileStates.age_changing),
-                                     not_command)
-
         self.router.callback_query.register(self.change_city_button, F.data == "change_city",
                                             is_registered_filter)
         self.router.message.register(self.new_city_to_db, StateFilter(ChangeProfileStates.city_changing), F.text,
@@ -352,11 +335,25 @@ class ProfileManagementHandlers:
         self.router.message.register(self.city_mistake_invalid, StateFilter(ChangeProfileStates.city_mistake),
                                      not_command)
 
-        self.router.callback_query.register(self.change_gender_button, F.data == "change_gender",
+        self.router.callback_query.register(self.change_role_button, F.data == "change_role",
                                             is_registered_filter)
-        self.router.callback_query.register(self.new_gender_to_db, F.data.in_({'Male', 'Female', 'Other'}),
-                                            StateFilter(ChangeProfileStates.gender_changing))
-        self.router.message.register(self.gender_changing_invalid, StateFilter(ChangeProfileStates.gender_changing),
+        self.router.message.register(self.new_role_to_db, StateFilter(ChangeProfileStates.role_changing),
+                                     F.text, not_command)
+        self.router.message.register(self.new_role_invalid, StateFilter(ChangeProfileStates.role_changing),
+                                     not_command)
+
+        self.router.callback_query.register(self.change_status_button, F.data == "change_status",
+                                            is_registered_filter)
+        self.router.message.register(self.new_status_to_db, StateFilter(ChangeProfileStates.status_changing),
+                                     F.text, not_command)
+        self.router.message.register(self.new_status_invalid, StateFilter(ChangeProfileStates.status_changing),
+                                     not_command)
+
+        self.router.callback_query.register(self.change_links_button, F.data == "change_links",
+                                            is_registered_filter)
+        self.router.message.register(self.new_links_to_db, StateFilter(ChangeProfileStates.links_changing),
+                                     F.text, not_command)
+        self.router.message.register(self.new_links_invalid, StateFilter(ChangeProfileStates.links_changing),
                                      not_command)
 
         self.router.callback_query.register(self.change_description_button, F.data == "change_description",
@@ -365,6 +362,20 @@ class ProfileManagementHandlers:
                                      F.text, not_command)
         self.router.message.register(self.new_description_invalid,
                                      StateFilter(ChangeProfileStates.description_changing), not_command)
+
+        self.router.callback_query.register(self.change_can_help_button, F.data == "change_can_help",
+                                            is_registered_filter)
+        self.router.message.register(self.new_can_help_to_db, StateFilter(ChangeProfileStates.can_help_changing),
+                                     F.text, not_command)
+        self.router.message.register(self.new_can_help_invalid, StateFilter(ChangeProfileStates.can_help_changing),
+                                     not_command)
+
+        self.router.callback_query.register(self.change_looking_for_button, F.data == "change_looking_for",
+                                            is_registered_filter)
+        self.router.message.register(self.new_looking_for_to_db,
+                                     StateFilter(ChangeProfileStates.looking_for_changing), F.text, not_command)
+        self.router.message.register(self.new_looking_for_invalid,
+                                     StateFilter(ChangeProfileStates.looking_for_changing), not_command)
 
         self.router.callback_query.register(self.change_photo_button, F.data == "change_photo",
                                             is_registered_filter)
@@ -377,22 +388,4 @@ class ProfileManagementHandlers:
         self.router.message.register(self.new_photo_to_db, StateFilter(ChangeProfileStates.photo_changing), F.photo)
         self.router.message.register(self.photo_changing_invalid, StateFilter(ChangeProfileStates.photo_changing),
                                      not_command)
-
-        self.router.callback_query.register(self.change_preferred_gender_button, F.data == 'change_preferred_gender',
-                                            is_registered_filter)
-        self.router.callback_query.register(self.new_preferred_gender_to_db, F.data.in_({'Male', 'Female', 'Any'}),
-                                            StateFilter(ChangeProfileStates.preferred_gender_changing))
-        self.router.message.register(self.preferred_gender_changing_invalid,
-                                     StateFilter(ChangeProfileStates.preferred_gender_changing), not_command)
-
-        self.router.callback_query.register(self.change_preferred_age_button, F.data == "change_preferred_age",
-                                            is_registered_filter)
-        self.router.message.register(self.lower_age_point_to_db, StateFilter(ChangeProfileStates.preferred_age_lower),
-                                     F.text, not_command)
-        self.router.message.register(self.lower_age_point_invalid,
-                                     StateFilter(ChangeProfileStates.preferred_age_lower), not_command)
-        self.router.message.register(self.high_age_point_to_db, StateFilter(ChangeProfileStates.preferred_age_upper),
-                                     F.text, not_command)
-        self.router.message.register(self.high_age_point_invalid,
-                                     StateFilter(ChangeProfileStates.preferred_age_upper), not_command)
         return self.router
