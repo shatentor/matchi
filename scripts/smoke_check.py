@@ -408,6 +408,26 @@ try:
 except ImportError:
     print("SKIP  проверка SQL: sqlglot не установлен")
 
+# ---------- 12. Шаблон .env не отстал от настроек и не содержит секретов ----------
+example = proj / ".env.example"
+if example.exists():
+    example_text = example.read_text()
+    declared = set(re.findall(r'os\.getenv\("([A-Z_]+)"', (proj / "config" / "settings.py").read_text()))
+    documented = set(re.findall(r"^([A-Z_]+)=", example_text, re.M))
+    check("в .env.example перечислены все переменные из settings.py",
+          not (declared - documented), f"не хватает: {sorted(declared - documented)}")
+    check("в .env.example нет лишних переменных",
+          not (documented - declared), f"лишние: {sorted(documented - declared)}")
+    # Шаблон коммитится, поэтому заполненный секрет в нём — это утечка.
+    filled_secrets = [name for name in ("BOT_TOKEN", "DB_PASSWORD")
+                      if re.search(rf"^{name}=.+$", example_text, re.M)]
+    check("в .env.example не проставлены секреты", not filled_secrets, str(filled_secrets))
+else:
+    check("есть .env.example", False, "файл отсутствует")
+
+check(".env не отслеживается git",
+      ".env" not in os.popen("git -C %s ls-files .env" % proj).read())
+
 try:
     from db.migrate import discover_migrations
 
