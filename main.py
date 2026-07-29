@@ -36,6 +36,7 @@ from handlers.admin import AdminHandlers
 from handlers.interests import InterestHandlers
 from handlers.dialogs import DialogHandlers
 from handlers.rooms import RoomHandlers
+from handlers.menu import MenuHandlers
 from handlers.errors import build_errors_router
 
 from filters.custom_filters import IsRegistered, IsAdmin, IsFeedbackForCurrentProfile
@@ -49,19 +50,15 @@ logger = logging.getLogger(__name__)
 
 async def set_commands(bot: Bot):
     """Устанавливает стандартные команды для бота."""
+    # В меню Telegram держим короткий список: одиннадцать пунктов приходилось
+    # листать. Остальные команды работают по-прежнему, просто не показываются —
+    # все разделы доступны кнопками через /menu.
+    # /admin и /complains не публикуются: они только для админов.
     commands = [
+        BotCommand(command="/menu", description="Меню"),
+        BotCommand(command="/searchi", description="Искать людей"),
         BotCommand(command="/start", description="Начать"),
-        BotCommand(command="/show_my_profile", description="Мой профиль"),
-        BotCommand(command="/change_my_profile", description="Изменить мой профиль"),
-        BotCommand(command="/searchi", description="Поиск профилей"),
-        BotCommand(command="/show_mutual_likes", description="Мои взаимные лайки"),
-        BotCommand(command="/interests", description="Мои интересы"),
-        BotCommand(command="/dialogs", description="Мои переписки"),
-        BotCommand(command="/roulette", description="Случайный собеседник по интересу"),
-        BotCommand(command="/rooms", description="Комнаты по интересам"),
-        BotCommand(command="/support", description="Сообщение администратору"),
-        BotCommand(command="/help", description="Помощь :)")
-        # /admin и /complains намеренно не публикуются в меню — они только для админов
+        BotCommand(command="/help", description="Помощь"),
     ]
     await bot.set_my_commands(commands)
 
@@ -135,8 +132,11 @@ async def main():
 
 
     # --- Создание экземпляров хендлеров и получение их роутеров ---
+    # Экземпляры храним в переменных: меню вызывает их точки входа напрямую,
+    # чтобы не дублировать логику разделов.
     registration_router = RegistrationHandlers(user_service).get_router()
-    command_router = CommandHandlers(user_service, matching_service, support_service).get_router(
+    command_handlers_instance = CommandHandlers(user_service, matching_service, support_service)
+    command_router = command_handlers_instance.get_router(
         is_registered_filter=is_registered_filter
     )
     profile_management_router = ProfileManagementHandlers(user_service).get_router(
@@ -148,21 +148,33 @@ async def main():
         is_registered_filter=is_registered_filter,
         is_feedback_for_current_profile_filter=is_feedback_for_current_profile_filter
     )
-    interests_router = InterestHandlers(interest_service).get_router(
+    interest_handlers_instance = InterestHandlers(interest_service)
+    interests_router = interest_handlers_instance.get_router(
         is_registered_filter=is_registered_filter
     )
-    dialogs_router = DialogHandlers(
+    dialog_handlers_instance = DialogHandlers(
         dialog_service=dialog_service,
         user_service=user_service,
         support_service=support_service,
         interest_service=interest_service,
         roulette_service=roulette_service,
-    ).get_router(is_registered_filter=is_registered_filter)
-    rooms_router = RoomHandlers(
+    )
+    dialogs_router = dialog_handlers_instance.get_router(is_registered_filter=is_registered_filter)
+    room_handlers_instance = RoomHandlers(
         room_service=room_service,
         interest_service=interest_service,
         user_service=user_service,
-    ).get_router(is_registered_filter=is_registered_filter, is_admin_filter=is_admin_filter)
+    )
+    rooms_router = room_handlers_instance.get_router(
+        is_registered_filter=is_registered_filter, is_admin_filter=is_admin_filter
+    )
+    menu_router = MenuHandlers(
+        command_handlers=command_handlers_instance,
+        search_handlers=profile_search_handlers_instance,
+        dialog_handlers=dialog_handlers_instance,
+        room_handlers=room_handlers_instance,
+        interest_handlers=interest_handlers_instance,
+    ).get_router(is_registered_filter=is_registered_filter)
     admin_handlers_instance = AdminHandlers(admin_service, user_service)
     admin_handlers_instance.set_bot_instance(bot)
     admin_router = admin_handlers_instance.get_router(is_admin_filter=is_admin_filter)
@@ -173,6 +185,7 @@ async def main():
     # ввод анкеты), админский последним. Роутер ошибок подключается в конце,
     # чтобы ловить исключения из всех остальных.
     dp.include_router(registration_router)
+    dp.include_router(menu_router)
     dp.include_router(command_router)
     dp.include_router(profile_management_router)
     dp.include_router(profile_search_router)
