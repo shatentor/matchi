@@ -34,6 +34,32 @@ class Settings:
     SUPPORT_COOLDOWN: int = int(os.getenv("SUPPORT_COOLDOWN", 120))
     BROADCAST_DELAY: float = float(os.getenv("BROADCAST_DELAY", 0.05))
 
+    # Интересы
+    MAX_USER_INTERESTS: int = int(os.getenv("MAX_USER_INTERESTS", 5))
+
+    # Исходящая очередь (веерная рассылка в комнатах)
+    # Telegram допускает порядка 30 сообщений в секунду суммарно, поэтому
+    # держим запас, и не быстрее одного сообщения в секунду в один и тот же чат.
+    OUTBOX_RATE: float = float(os.getenv("OUTBOX_RATE", 25))
+    OUTBOX_PER_CHAT_INTERVAL: float = float(os.getenv("OUTBOX_PER_CHAT_INTERVAL", 1.0))
+    SEND_RETRY_ATTEMPTS: int = int(os.getenv("SEND_RETRY_ATTEMPTS", 3))
+
+    # Троттлинг входящих апдейтов
+    THROTTLE_LIMIT: int = int(os.getenv("THROTTLE_LIMIT", 12))
+    THROTTLE_WINDOW: int = int(os.getenv("THROTTLE_WINDOW", 10))
+
+    # Комнаты по интересам
+    ROOM_MEMBER_LIMIT: int = int(os.getenv("ROOM_MEMBER_LIMIT", 30))
+    ROOM_MAX_MESSAGE_LENGTH: int = int(os.getenv("ROOM_MAX_MESSAGE_LENGTH", 700))
+    ROOM_HISTORY_SIZE: int = int(os.getenv("ROOM_HISTORY_SIZE", 15))
+    ROOM_INVITE_TTL: int = int(os.getenv("ROOM_INVITE_TTL", 3600))
+
+    # Рулетка по интересам
+    ROULETTE_WAIT_TTL: int = int(os.getenv("ROULETTE_WAIT_TTL", 600))
+
+    # Личные диалоги
+    DIALOG_HISTORY_SIZE: int = int(os.getenv("DIALOG_HISTORY_SIZE", 20))
+
 
 settings = Settings()
 
