@@ -1,20 +1,21 @@
 import logging
 from contextlib import suppress
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config.settings import settings
 from filters.custom_filters import IsRegistered
 from handlers.posts import PostStates, fit_escaped, render_feed_item, send_post
 from keyboards.feed import (FeedCB, comment_cancel_keyboard, delete_confirm_keyboard,
                             feed_comments_keyboard, feed_post_keyboard, my_posts_keyboard)
-from models.post import REACTION_EMOJIS, FeedItem
+from models.post import REACTION_EMOJIS, FeedItem, Post, PostComment
 from models.user import User
 from services.admin_service import AdminService
 from services.interest_service import InterestService
@@ -43,6 +44,9 @@ REACTION_NOTE = {
     "changed": "Реакция изменена.",
     "removed": "Реакция снята.",
 }
+
+# Имя для уведомления, когда анкета автора отзыва не дозаполнена.
+UNKNOWN_NAME = "Кто-то из своих"
 
 POST_DRAFT_STATES = (PostStates.content.state, PostStates.topic.state,
                      PostStates.confirm.state)
@@ -213,6 +217,32 @@ class FeedHandlers:
             lines.append(f"ID: {escape(author_chat_id)}")
         return "\n".join(lines)
 
+    async def _actor_name(self, tg_chat_id: int) -> str:
+        """Имя того, кто оставил отзыв, для уведомления автору."""
+        user = await self.user_service.get_user_by_id(tg_chat_id)
+        return user.name if user and user.name else UNKNOWN_NAME
+
+    async def _notify_reaction(self, post: Post, reactor_id: int, emoji: str) -> None:
+        """Уведомление автору о реакции. Сбой уведомления не ломает саму реакцию."""
+        try:
+            await self.post_service.notify_reaction(post, await self._actor_name(reactor_id),
+                                                    emoji, reactor_id)
+        except Exception as e:
+            logger.error(f"Уведомление о реакции на пост {post.id} не поставлено в очередь: {e}")
+
+    async def _notify_comment(self, post: Post, comment: PostComment) -> None:
+        """Уведомление автору о комментарии.
+
+        Комментарий уже сохранён, поэтому сбой уведомления не должен выглядеть
+        для комментатора как неудача.
+        """
+        try:
+            name = await self._actor_name(int(comment.author_chat_id))
+            await self.post_service.notify_comment(post, comment, name)
+        except Exception as e:
+            logger.error(f"Уведомление о комментарии к посту {post.id} "
+                         f"не поставлено в очередь: {e}")
+
     # ---------- вход в ленту ----------
 
     async def feed_command(self, message: types.Message, state: FSMContext) -> None:
@@ -277,13 +307,69 @@ class FeedHandlers:
 
         await message.answer("\n\n".join(lines), reply_markup=my_posts_keyboard(entries))
 
+    # ---------- настройка уведомлений ----------
+
+    @staticmethod
+    def _notify_keyboard(feed_on: bool, reply_on: bool) -> types.InlineKeyboardMarkup:
+        """Два переключателя, каждый в своём ряду.
+
+        Разметка собирается здесь, а не в keyboards/feed.py: кнопкам хватает
+        существующей фабрики FeedCB, а заводить конструктор клавиатуры в чужом
+        файле ради двух рядов не нужно. Только row(): adjust() переразбил бы
+        ряды и слепил оба переключателя в один.
+        """
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(
+            text=f"{'🔔' if feed_on else '🔕'} Новые посты в сети: "
+                 f"{'вкл' if feed_on else 'выкл'}",
+            callback_data=FeedCB(action="nt_feed").pack(),
+        ))
+        builder.row(types.InlineKeyboardButton(
+            text=f"{'🔔' if reply_on else '🔕'} Отзывы на мои посты: "
+                 f"{'вкл' if reply_on else 'выкл'}",
+            callback_data=FeedCB(action="nt_reply").pack(),
+        ))
+        return builder.as_markup()
+
+    async def _notify_screen(self, viewer_id: int) -> Tuple[str, types.InlineKeyboardMarkup]:
+        """Текст и клавиатура экрана уведомлений по текущему состоянию флагов."""
+        feed_on = await self.post_service.notify_enabled(viewer_id)
+        reply_on = await self.post_service.reply_notify_enabled(viewer_id)
+
+        text = ("<b>Уведомления</b>\n\n"
+                f"{'🔔' if feed_on else '🔕'} <b>Новые посты в сети</b> — "
+                f"{'приходят' if feed_on else 'не приходят'}.\n"
+                f"{'🔔' if reply_on else '🔕'} <b>Отзывы на мои посты</b> "
+                f"(комментарии и реакции) — "
+                f"{'приходят' if reply_on else 'не приходят'}.\n\n"
+                "Нажмите кнопку, чтобы переключить. Лента доступна всегда: /feed")
+        return text, self._notify_keyboard(feed_on, reply_on)
+
     async def feed_notify_command(self, message: types.Message) -> None:
-        enabled = await self.post_service.toggle_notify(message.chat.id)
-        if enabled:
-            await message.answer("Уведомления о новых постах включены.")
+        text, keyboard = await self._notify_screen(message.chat.id)
+        await message.answer(text, reply_markup=keyboard)
+
+    async def notify_toggle_callback(self, call: types.CallbackQuery,
+                                     callback_data: FeedCB) -> None:
+        message = self._accessible(call)
+        if message is None:
+            await call.answer("Сообщение устарело, откройте настройки заново: /feed_notify",
+                              show_alert=True)
+            return
+
+        await call.answer()
+        if callback_data.action == "nt_feed":
+            enabled = await self.post_service.toggle_notify(call.from_user.id)
+            note = "Новые посты: " + ("включены" if enabled else "выключены")
         else:
-            await message.answer("Уведомления о новых постах выключены. "
-                                 "Лента всё равно доступна: /feed")
+            enabled = await self.post_service.toggle_reply_notify(call.from_user.id)
+            note = "Отзывы на мои посты: " + ("включены" if enabled else "выключены")
+
+        text, keyboard = await self._notify_screen(call.from_user.id)
+        # Экран правится на месте, чтобы переключение флагов не плодило
+        # сообщений; "message is not modified" тут не ошибка.
+        with suppress(TelegramBadRequest):
+            await message.edit_text(f"{text}\n\n{note}.", reply_markup=keyboard)
 
     # ---------- навигация и реакции ----------
 
@@ -323,8 +409,9 @@ class FeedHandlers:
             await call.answer("Такой реакции нет.", show_alert=True)
             return
 
-        action, item = await self.post_service.react(callback_data.post_id, call.from_user.id,
-                                                     callback_data.emoji)
+        action, item, notify_author = await self.post_service.react(
+            callback_data.post_id, call.from_user.id, callback_data.emoji
+        )
         if action is None or item is None:
             await call.answer("Этого поста больше нет. Откройте ленту заново: /feed",
                               show_alert=True)
@@ -333,6 +420,11 @@ class FeedHandlers:
         # Крутилку гасим ДО правки сообщения: если Telegram ответит
         # "message is not modified", ответ на callback уже не дошёл бы.
         await call.answer(REACTION_NOTE.get(action, ""))
+
+        # notify_author посчитан сервисом до записи реакции: смена эмодзи и
+        # повторная реакция уведомления автору не порождают.
+        if notify_author:
+            await self._notify_reaction(item.post, call.from_user.id, callback_data.emoji)
 
         message = self._accessible(call)
         if message is None:
@@ -416,6 +508,13 @@ class FeedHandlers:
 
         await state.set_state(None)
         await message.answer(escape(reason) + note)
+
+        # Автору поста нужен сам пост, а не только его id: FeedItem всё равно
+        # понадобился бы, чтобы назвать пост в уведомлении.
+        item = await self.post_service.feed_item(post_id, message.chat.id)
+        if item is not None:
+            await self._notify_comment(item.post, comment)
+
         rows = await self.post_service.comments(post_id)
         await message.answer(self._comments_text(rows),
                              reply_markup=feed_comments_keyboard(post_id))
@@ -510,6 +609,9 @@ class FeedHandlers:
         self.router.callback_query.register(self.back_callback, FeedCB.filter(F.action == "back"),
                                             is_registered_filter)
         self.router.callback_query.register(self.cancel_callback, FeedCB.filter(F.action == "cancel"),
+                                            is_registered_filter)
+        self.router.callback_query.register(self.notify_toggle_callback,
+                                            FeedCB.filter(F.action.in_({"nt_feed", "nt_reply"})),
                                             is_registered_filter)
 
         # Fallback идёт после основного хендлера состояния, иначе перехватывал бы

@@ -30,6 +30,7 @@ class FeedCB(CallbackData, prefix="fd"):
 
     action: react | comments | write | older | newer | author | open
             | del_ask | del_yes | back | cancel
+            | nt_feed | nt_reply — переключатели уведомлений в /feed_notify
     emoji заполнено только у react и обязано быть одним из REACTION_EMOJIS.
     """
     action: str

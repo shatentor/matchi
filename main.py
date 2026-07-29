@@ -32,6 +32,7 @@ from services.room_service import RoomService
 from services.invite_service import InviteService
 from services.community_service import CommunityService
 from services.post_service import PostService
+from services.directory_service import DirectoryService
 from services.outbox import Outbox
 
 from handlers.registration import RegistrationHandlers
@@ -46,6 +47,7 @@ from handlers.menu import MenuHandlers
 from handlers.invites import InviteHandlers
 from handlers.posts import PostHandlers
 from handlers.feed import FeedHandlers
+from handlers.directory import DirectoryHandlers
 from handlers.errors import build_errors_router
 
 from filters.custom_filters import IsRegistered, IsAdmin, IsFeedbackForCurrentProfile
@@ -67,7 +69,8 @@ async def set_commands(bot: Bot):
         BotCommand(command="/menu", description="Меню"),
         BotCommand(command="/feed", description="Лента"),
         BotCommand(command="/post", description="Новый пост"),
-        BotCommand(command="/searchi", description="Искать людей"),
+        BotCommand(command="/people", description="Участники"),
+        BotCommand(command="/searchi", description="Смотреть анкеты"),
         BotCommand(command="/invite", description="Пригласить друга"),
         BotCommand(command="/community", description="Вход в чат сообщества"),
         BotCommand(command="/start", description="Начать"),
@@ -108,6 +111,8 @@ async def main():
     invite_service = InviteService(invite_repo=invite_repo)
     community_service = CommunityService(community_repo=community_repo)
     post_service = PostService(post_repo=post_repo, user_repo=user_repo)
+    directory_service = DirectoryService(user_repo=user_repo, interest_repo=interest_repo,
+                                        invite_repo=invite_repo)
 
     # Инициализация хранилища FSM (Redis)
     # Используем RedisStorage для aiogram v3
@@ -209,6 +214,12 @@ async def main():
         interest_service=interest_service,
     )
     feed_router = feed_handlers_instance.get_router(is_registered_filter=is_registered_filter)
+    directory_handlers_instance = DirectoryHandlers(
+        directory_service=directory_service,
+        user_service=user_service,
+        post_service=post_service,
+    )
+    directory_router = directory_handlers_instance.get_router(is_registered_filter=is_registered_filter)
     menu_router = MenuHandlers(
         command_handlers=command_handlers_instance,
         search_handlers=profile_search_handlers_instance,
@@ -218,6 +229,7 @@ async def main():
         invite_handlers=invite_handlers_instance,
         post_handlers=post_handlers_instance,
         feed_handlers=feed_handlers_instance,
+        directory_handlers=directory_handlers_instance,
         dialog_service=dialog_service,
     ).get_router(is_registered_filter=is_registered_filter)
     admin_handlers_instance = AdminHandlers(admin_service, user_service)
@@ -238,6 +250,7 @@ async def main():
     dp.include_router(invites_router)
     dp.include_router(posts_router)
     dp.include_router(feed_router)
+    dp.include_router(directory_router)
     dp.include_router(dialogs_router)
     dp.include_router(rooms_router)
     dp.include_router(admin_router)

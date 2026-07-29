@@ -2,7 +2,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import settings
-from db.repositories.post_repo import PostRepository
+from db.repositories.post_repo import REACTION_SET, PostRepository
 from db.repositories.user_repo import UserRepository
 from models.post import EMOJI_COLUMN_LENGTH, FeedItem, Post, PostComment
 from services.outbox import Outbox
@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 # Сколько символов поста показать в уведомлении. Уведомление — это приглашение
 # открыть ленту, а не сам пост: фотографии в него всё равно не попадают.
 NOTIFY_PREVIEW_LENGTH = 160
+# Насколько коротко назвать пост в уведомлении об отзыве: адресату нужно только
+# узнать свой пост, сам текст он и так помнит.
+NOTIFY_TITLE_LENGTH = 60
+# Сколько символов комментария показать в уведомлении: он может быть длиной до
+# settings.POST_MAX_COMMENT_LENGTH, а уведомление — приглашение открыть ленту.
+NOTIFY_COMMENT_LENGTH = 500
 
 
 class PostService:
@@ -124,26 +130,36 @@ class PostService:
     # ---------- реакции ----------
 
     async def react(self, post_id: int, tg_chat_id: int,
-                    emoji: str) -> Tuple[Optional[str], Optional[FeedItem]]:
-        """Переключает реакцию и возвращает (действие, обновлённый пост).
+                    emoji: str) -> Tuple[Optional[str], Optional[FeedItem], bool]:
+        """Переключает реакцию и возвращает (действие, обновлённый пост, уведомлять ли автора).
 
         Действие — 'set', 'changed' или 'removed'; None означает отказ (поста
         нет или эмодзи не подходит). Обновлённый FeedItem нужен, чтобы
         перерисовать клавиатуру со счётчиками на месте, без нового сообщения.
+
+        Третье значение — можно ли звать notify_reaction. Считается ЗДЕСЬ,
+        потому что first_reaction_of обязан спрашиваться до set_reaction: после
+        него строка в post_reactions уже есть и первое нажатие не отличить от
+        смены эмодзи. Хендлеру остаётся передать флаг дальше — сам он к
+        репозиторию не ходит.
         """
         clean = (emoji or "").strip()
         # post_reactions.emoji — VARCHAR(8), более длинное значение PostgreSQL
         # обрежет молча, и снять такую реакцию повторным нажатием уже не выйдет
         if not clean or len(clean) > EMOJI_COLUMN_LENGTH:
             logger.warning(f"Реакция {emoji!r} не подходит под колонку emoji")
-            return None, None
+            return None, None, False
 
         post = await self.post_repo.get(post_id)
         if post is None or post.is_deleted:
-            return None, None
+            return None, None, False
 
+        own_post = post.author_chat_id == str(tg_chat_id)
+        first_time = (not own_post
+                      and await self.post_repo.first_reaction_of(post_id, str(tg_chat_id)))
         action = await self.post_repo.set_reaction(post_id, str(tg_chat_id), clean)
-        return action, await self.post_repo.get_feed_item(post_id, str(tg_chat_id))
+        item = await self.post_repo.get_feed_item(post_id, str(tg_chat_id))
+        return action, item, bool(first_time) and action == REACTION_SET
 
     # ---------- комментарии ----------
 
@@ -201,3 +217,89 @@ class PostService:
 
     async def notify_enabled(self, tg_chat_id: int) -> bool:
         return await self.post_repo.notify_enabled(str(tg_chat_id))
+
+    async def toggle_reply_notify(self, tg_chat_id: int) -> bool:
+        """Включает или выключает уведомления об отзывах на свои посты."""
+        return await self.post_repo.toggle_reply_notify(str(tg_chat_id))
+
+    async def reply_notify_enabled(self, tg_chat_id: int) -> bool:
+        return await self.post_repo.reply_notify_enabled(str(tg_chat_id))
+
+    # ---------- уведомления об отзывах ----------
+
+    @staticmethod
+    def _post_title(post: Post) -> str:
+        """Как назвать пост в уведомлении: начало текста или «без текста».
+
+        Пост может быть из одних фотографий — тогда цитировать нечего, а
+        уведомление всё равно должно быть понятным.
+        """
+        preview = " ".join((post.text or "").split())[:NOTIFY_TITLE_LENGTH]
+        return f"«{escape(preview)}»" if preview else "без текста"
+
+    async def _notify_author(self, post: Post, actor_chat_id: str, payload: str) -> bool:
+        """Общая часть уведомлений автору: кому, стоит ли и через что отправлять.
+
+        Своё не уведомляем: автор и так знает, что сам написал. Отправка только
+        через Outbox — как и веер о новом посте: прямой bot.send_message в обход
+        очереди упирается в лимиты Telegram и кончается флуд-контролем на весь
+        бот, а отзывы на популярный пост приходят пачкой.
+        """
+        if post.id is None:
+            return False
+
+        author = post.author_chat_id
+        if author == actor_chat_id:
+            return False
+
+        if not await self.post_repo.reply_notify_enabled(author):
+            return False
+
+        if self.outbox is None:
+            logger.error(f"Outbox не передан в PostService, отзыв на пост {post.id} "
+                         f"автору не отправлен")
+            return False
+
+        try:
+            chat_id = int(author)
+        except (TypeError, ValueError):
+            logger.warning(f"Некорректный tg_chat_id автора поста {post.id}: {author!r}")
+            return False
+
+        await self.outbox.enqueue(chat_id, payload)
+        return True
+
+    async def notify_comment(self, post: Post, comment: PostComment,
+                             author_name: str) -> bool:
+        """Уведомляет автора поста о новом комментарии. True — поставлено в очередь.
+
+        Не уведомляет, если комментатор и есть автор поста или если у автора
+        выключен reply_notify.
+        """
+        full = (comment.text or "").strip()
+        body = full[:NOTIFY_COMMENT_LENGTH] + ("…" if len(full) > NOTIFY_COMMENT_LENGTH else "")
+        payload = (f"💬 <b>{escape(author_name)}</b> прокомментировал ваш пост "
+                   f"({self._post_title(post)}):\n"
+                   f"{escape(body)}\n\n"
+                   f"Открыть ленту: /feed")
+        return await self._notify_author(post, comment.author_chat_id, payload)
+
+    async def notify_reaction(self, post: Post, reactor_name: str, emoji: str,
+                              reactor_id: int) -> bool:
+        """Уведомляет автора поста о реакции. True — поставлено в очередь.
+
+        Зовётся ТОЛЬКО когда человек реагирует на этот пост впервые: это
+        проверяет react() через first_reaction_of ДО записи реакции. Иначе
+        перещёлкивание эмодзи туда-сюда завалило бы автора уведомлениями.
+        Своя реакция на свой пост не уведомляется.
+        """
+        payload = (f"{escape(emoji)} <b>{escape(reactor_name)}</b> отметил реакцией ваш пост "
+                   f"({self._post_title(post)})\n\n"
+                   f"Открыть ленту: /feed")
+        queued = await self._notify_author(post, str(reactor_id), payload)
+        if queued and post.id is not None:
+            # Отметка ставится только после успешной постановки в очередь:
+            # иначе выключенные уведомления или сбой съели бы единственный шанс
+            # автора узнать об этом человеке.
+            await self.post_repo.mark_reaction_notified(post.id, str(reactor_id))
+        return queued

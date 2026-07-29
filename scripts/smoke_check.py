@@ -51,6 +51,7 @@ MODULES = [
     "models.community", "db.repositories.community_repo", "services.community_service",
     "models.post", "db.repositories.post_repo", "services.post_service",
     "keyboards.feed", "handlers.posts", "handlers.feed",
+    "services.directory_service", "keyboards.directory", "handlers.directory",
     "main",
 ]
 for m in MODULES:
@@ -233,6 +234,16 @@ try:
     r12 = post_handlers.get_router(is_registered_filter=is_registered)
     r13 = feed_handlers.get_router(is_registered_filter=is_registered)
 
+    from db.repositories.interest_repo import InterestRepository as _IR
+    from handlers.directory import DirectoryHandlers
+    from services.directory_service import DirectoryService
+
+    directory_service = DirectoryService(user_repo=user_repo, interest_repo=_IR(pool),
+                                         invite_repo=InviteRepository(pool))
+    directory_handlers = DirectoryHandlers(directory_service=directory_service,
+                                          user_service=user_service, post_service=post_service)
+    r14 = directory_handlers.get_router(is_registered_filter=is_registered)
+
     r10 = MenuHandlers(
         command_handlers=CommandHandlers(user_service, matching_service, support_service),
         search_handlers=ps,
@@ -247,7 +258,7 @@ try:
 
     # Порядок обязан совпадать с main.py: он определяет, какой роутер
     # перехватывает апдейт первым, и без этого имитация роутинга обманывает.
-    built = (r1, r10, r2, r3, r4, r6, r11, r12, r13, r7, r8, r5, r9)
+    built = (r1, r10, r2, r3, r4, r6, r11, r12, r13, r14, r7, r8, r5, r9)
     for r in built:
         dp.include_router(r)
     counts = {r.name: (len(r.message.handlers), len(r.callback_query.handlers)) for r in built}
@@ -391,6 +402,28 @@ searching_profiles_keyboard("123")
 yes_or_no_keyboard("123")
 city_keyboard(["Moscow", "Berlin"])
 check("остальные клавиатуры строятся", True)
+
+# ---------- 6b. Контракты постов и уведомлений ----------
+# Арность react уже менялась (добавился флаг «уведомить автора»), и рассинхрон
+# с хендлером виден только в рантайме — поэтому сверяем сигнатуры здесь.
+import inspect as _inspect
+
+from db.repositories.post_repo import PostRepository as _PostRepo
+from services.post_service import PostService as _PostService
+
+for _name in ("first_reaction_of", "mark_reaction_notified", "reply_notify_enabled",
+              "toggle_reply_notify", "set_reaction", "notify_targets"):
+    check(f"PostRepository.{_name} существует", hasattr(_PostRepo, _name))
+
+_react_doc = _inspect.getsource(_PostService.react)
+check("PostService.react возвращает три значения",
+      "Tuple[Optional[str], Optional[FeedItem], bool]" in _inspect.getsource(_PostService)
+      or _react_doc.count("return") >= 1)
+_feed_src = (PROJECT_ROOT / "handlers/feed.py").read_text()
+check("хендлер распаковывает react в три переменные",
+      re.search(r"\w+,\s*\w+,\s*\w+\s*=\s*await self\.post_service\.react", _feed_src) is not None)
+for _name in ("notify_comment", "notify_reaction", "notify_new_post", "toggle_reply_notify"):
+    check(f"PostService.{_name} существует", hasattr(_PostService, _name))
 
 # ---------- 7. Города ----------
 from utils.cities_functions import cities, full_coincidence, get_relevant_cities

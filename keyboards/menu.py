@@ -18,18 +18,21 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         _button("✍️ Новый пост", "new_post"),
     )
     builder.row(
-        _button("🔍 Искать людей", "search"),
+        _button("👥 Участники", "people"),
         _button("💬 Переписки", "dialogs"),
     )
     builder.row(
+        _button("🔍 Смотреть анкеты", "search"),
         _button("🎲 Рулетка", "roulette"),
+    )
+    builder.row(
         _button("🏠 Комнаты", "rooms"),
+        _button("🎯 Интересы", "interests"),
     )
     builder.row(
         _button("👤 Мой профиль", "profile"),
-        _button("🎯 Интересы", "interests"),
+        _button("⚙️ Ещё", "extra"),
     )
-    builder.row(_button("⚙️ Ещё", "extra"))
     return builder.as_markup()
 
 

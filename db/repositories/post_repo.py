@@ -266,6 +266,42 @@ class PostRepository(BaseRepository):
         record = await self.pool.fetchrow(query, post_id, tg_chat_id)
         return record['emoji'] if record else None
 
+    async def first_reaction_of(self, post_id: int, tg_chat_id: str) -> bool:
+        """Ставит ли человек реакцию на этот пост впервые (и не уведомляли ли уже).
+
+        Спрашивать это надо ДО set_reaction: после него строка в post_reactions
+        уже есть, и отличить первое нажатие от смены эмодзи нельзя.
+
+        Одного условия недостаточно: наличие строки в post_reactions
+        отвечает только на «реакция стоит прямо сейчас», а снятие реакции строку
+        удаляет. Без отметки в post_reaction_notices цикл «поставил — снял —
+        поставил» каждый раз выглядел бы как первая реакция и заваливал автора.
+
+        При отсутствии ответа от БД возвращается False: лучше не уведомить, чем
+        уведомить лишний раз.
+        """
+        query = """
+        SELECT NOT EXISTS (SELECT 1 FROM post_reactions
+                            WHERE post_id = $1 AND tg_chat_id = $2)
+           AND NOT EXISTS (SELECT 1 FROM post_reaction_notices
+                            WHERE post_id = $1 AND tg_chat_id = $2) AS first_time;
+        """
+        record = await self.pool.fetchrow(query, post_id, tg_chat_id)
+        return bool(record['first_time']) if record else False
+
+    async def mark_reaction_notified(self, post_id: int, tg_chat_id: str) -> None:
+        """Запоминает, что автора об этой реакции уже уведомили.
+
+        DO NOTHING, а не проверка перед вставкой: два быстрых нажатия могут
+        дойти одновременно, и вторая вставка не должна ронять сценарий.
+        """
+        query = """
+        INSERT INTO post_reaction_notices (post_id, tg_chat_id)
+        VALUES ($1, $2)
+        ON CONFLICT (post_id, tg_chat_id) DO NOTHING;
+        """
+        await self._execute_query(query, post_id, tg_chat_id)
+
     # ---------- комментарии ----------
 
     async def add_comment(self, post_id: int, author_chat_id: str, text: str) -> PostComment:
@@ -340,6 +376,27 @@ class PostRepository(BaseRepository):
         query = "SELECT feed_notify FROM users WHERE tg_chat_id = $1;"
         record = await self.pool.fetchrow(query, tg_chat_id)
         return bool(record['feed_notify']) if record else False
+
+    async def reply_notify_enabled(self, tg_chat_id: str) -> bool:
+        """Хочет ли человек знать об отзывах на свои посты.
+
+        Флаг отдельный от feed_notify: «новые посты в сети» и «отзывы на мои
+        посты» выключают по разным причинам.
+        """
+        query = "SELECT reply_notify FROM users WHERE tg_chat_id = $1;"
+        record = await self.pool.fetchrow(query, tg_chat_id)
+        return bool(record['reply_notify']) if record else False
+
+    async def toggle_reply_notify(self, tg_chat_id: str) -> bool:
+        """Переключает уведомления об отзывах и возвращает новое состояние."""
+        query = """
+        UPDATE users
+        SET reply_notify = NOT reply_notify
+        WHERE tg_chat_id = $1
+        RETURNING reply_notify;
+        """
+        record = await self.pool.fetchrow(query, tg_chat_id)
+        return bool(record['reply_notify']) if record else False
 
     async def toggle_notify(self, tg_chat_id: str) -> bool:
         """Переключает уведомления о новых постах и возвращает новое состояние.

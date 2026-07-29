@@ -30,7 +30,8 @@ class MenuHandlers:
 
     def __init__(self, command_handlers, search_handlers, dialog_handlers,
                  room_handlers, interest_handlers, invite_handlers=None,
-                 post_handlers=None, feed_handlers=None, dialog_service=None):
+                 post_handlers=None, feed_handlers=None, directory_handlers=None,
+                 dialog_service=None):
         self.commands = command_handlers
         self.search = search_handlers
         self.dialogs = dialog_handlers
@@ -39,6 +40,7 @@ class MenuHandlers:
         self.invites = invite_handlers
         self.posts = post_handlers
         self.feed = feed_handlers
+        self.directory = directory_handlers
         # Нужен, чтобы при уходе в раздел корректно закрыть активный диалог
         # и уведомить собеседника, а не бросить переписку в подвешенном виде.
         self.dialog_service = dialog_service
@@ -130,6 +132,11 @@ class MenuHandlers:
             await self.commands.support_create(message, state)
         elif action == "help":
             await self.commands.help_func(message)
+        elif action == "people":
+            if self.directory is None:
+                await message.answer("Каталог участников пока недоступен.")
+            else:
+                await self.directory.people_command(message, state)
         elif action == "invite":
             await self.invites.invite_command(message)
         elif action == "community":
