@@ -408,7 +408,35 @@ try:
 except ImportError:
     print("SKIP  проверка SQL: sqlglot не установлен")
 
-# ---------- 12. Шаблон .env не отстал от настроек и не содержит секретов ----------
+# ---------- 12. Значения-константы влезают в объявленную ширину колонок ----------
+# Регистрация месяцами падала на StringDataRightTruncationError: код писал
+# 'in_progress' (11 символов) в is_registered VARCHAR(10). Без живой БД такое
+# видно только сверкой литералов со схемой.
+COLUMN_LITERALS = {
+    "is_registered": ["no", "yes", "in_progress"],
+    "gender": ["Male", "Female", "Other"],
+    "preferred_gender": ["Male", "Female", "Any"],
+    "mode": ["relay", "native"],
+    "source": ["profile", "roulette"],
+}
+
+migrations_sql = "\n".join(
+    p.read_text() for p in sorted((proj / "db" / "migrations").glob("*.sql"))
+)
+too_narrow = []
+for column, literals in COLUMN_LITERALS.items():
+    # Берём последнее объявление: ALTER COLUMN в поздней миграции переопределяет CREATE TABLE.
+    widths = re.findall(rf"\b{column}\s+VARCHAR\((\d+)\)", migrations_sql, re.I)
+    widths += re.findall(rf"ALTER COLUMN\s+{column}\s+TYPE\s+VARCHAR\((\d+)\)", migrations_sql, re.I)
+    if not widths:
+        continue
+    width = int(widths[-1])
+    longest = max(literals, key=len)
+    if len(longest) > width:
+        too_narrow.append(f"{column}: VARCHAR({width}) < '{longest}' ({len(longest)})")
+check("значения статусов влезают в колонки схемы", not too_narrow, str(too_narrow))
+
+# ---------- 13. Шаблон .env не отстал от настроек и не содержит секретов ----------
 example = proj / ".env.example"
 if example.exists():
     example_text = example.read_text()
