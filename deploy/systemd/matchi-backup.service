@@ -1,0 +1,10 @@
+[Unit]
+Description=Резервная копия базы Matchi
+Documentation=file:///home/nikita/PycharmProjects/matchi/scripts/README.md
+Wants=matchi-postgres.service
+After=matchi-postgres.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nikita/PycharmProjects/matchi
+ExecStart=/home/nikita/PycharmProjects/matchi/scripts/backup_db.sh

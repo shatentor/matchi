@@ -29,7 +29,27 @@ Matchi — Telegram-бот знакомств (`@match_botbot`): анкета, �
 
 **Локально всё поднято, но вручную.** PostgreSQL 16 в системе есть, только серверные бинарники лежат в `/usr/lib/postgresql/16/bin` и в PATH не попадают — `which postgres` их не находит, зови по полному пути. Кластер поднят без sudo: данные в `~/.local/share/matchi-pg`, порт **5433**, суперпользователь `postgres`, база `match_bot`, все миграции применены. Порт 5432 занят SSH-туннелем к рабочей базе — **не подключайся к нему и не выполняй там запросов**, именно поэтому кластер живёт на 5433. Redis взят из pip-пакета `redislite` (внутри лежит собранный `redis-server`) и слушает 6379, данные в `~/.local/share/matchi-redis`. Это компромисс для локальной разработки: `apt install redis-server` требует sudo, зато дал бы автозапуск через systemd. Зависимости стоят в постоянном `.venv`, бот запускается как `.venv/bin/python main.py`, лог пишется в `~/.local/share/matchi-bot.log`.
 
-Ни кластер, ни Redis не поднимаются после перезагрузки сами — поднимай их так:
+**Всем этим управляет systemd от имени пользователя** (`~/.config/systemd/user/`): юниты
+`matchi-postgres`, `matchi-redis`, `matchi-bot` и таймер `matchi-backup`. У пользователя включён
+`Linger=yes`, поэтому они поднимаются при загрузке машины без входа в систему. У бота
+`Restart=always`, так что упавший процесс возвращается сам — проверено `kill -9`.
+
+```bash
+systemctl --user status matchi-bot         # состояние
+journalctl --user -u matchi-bot -f         # живой лог (вместо файла)
+systemctl --user restart matchi-bot        # после правки кода
+systemctl --user start matchi-backup       # бэкап прямо сейчас
+```
+
+Запускать `main.py` руками теперь не нужно и вредно: два процесса будут тянуть апдейты одного
+бота. Машина — ноутбук, и при закрытии крышки она засыпает: бот в это время не отвечает, хотя
+Telegram держит апдейты около суток и после пробуждения они дойдут.
+
+Если поставишь Redis из apt, выключи `matchi-redis` — оба слушают 6379. Бинарник у юнита лежит
+в `~/.local/bin/matchi-redis-server`, скопирован из pip-пакета `redislite`, чтобы юнит не
+зависел от пересоздания `.venv`.
+
+Ручной запуск (если systemd недоступен):
 
 ```bash
 /usr/lib/postgresql/16/bin/pg_ctl -D /home/nikita/.local/share/matchi-pg \

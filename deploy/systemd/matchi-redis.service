@@ -1,0 +1,15 @@
+[Unit]
+Description=Redis для Matchi (состояния FSM, очереди рулетки, троттлинг)
+Documentation=file:///home/nikita/PycharmProjects/matchi/CLAUDE.md
+
+[Service]
+Type=simple
+# Бинарник скопирован из pip-пакета redislite в ~/.local/bin, чтобы юнит не
+# зависел от пересоздания .venv. Штатный redis-server из apt (если поставите)
+# слушает тот же порт — тогда этот юнит надо выключить, иначе конфликт.
+ExecStart=/home/nikita/.local/bin/matchi-redis-server --port 6379 --bind 127.0.0.1 --dir /home/nikita/.local/share/matchi-redis --dbfilename matchi.rdb --save 60 1 --appendonly no
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

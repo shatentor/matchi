@@ -1,0 +1,21 @@
+[Unit]
+Description=PostgreSQL для Matchi (кластер пользователя, порт 5433)
+Documentation=file:///home/nikita/PycharmProjects/matchi/CLAUDE.md
+# Порт 5433, а не 5432: 5432 занят SSH-туннелем к другой базе.
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/postgresql/16/bin/postgres -D /home/nikita/.local/share/matchi-pg -p 5433 -k /home/nikita/.local/share/matchi-pg-run -h 127.0.0.1
+# Type=simple считает юнит поднятым сразу после fork, а база к этому моменту
+# ещё не принимает соединения. Бот, запущенный раньше готовности, упал бы на
+# создании пула, поэтому ждём здесь: следующие юниты стартуют после ExecStartPost.
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 60); do /usr/lib/postgresql/16/bin/pg_isready -h 127.0.0.1 -p 5433 -q && exit 0; sleep 0.5; done; exit 1'
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

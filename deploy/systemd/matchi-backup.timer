@@ -1,0 +1,12 @@
+[Unit]
+Description=Ежедневный бэкап базы Matchi
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+# Persistent: если в 4 утра ноутбук спал или был выключен, бэкап снимется
+# при следующем включении, а не будет пропущен до завтра.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

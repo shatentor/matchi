@@ -1,0 +1,24 @@
+[Unit]
+Description=Telegram-бот Matchi
+Documentation=file:///home/nikita/PycharmProjects/matchi/CLAUDE.md
+# Wants, а не Requires: если Redis или база на секунду упали, бота не нужно
+# гасить насовсем — он перезапустится сам и переподключится.
+Wants=matchi-postgres.service matchi-redis.service
+After=matchi-postgres.service matchi-redis.service network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nikita/PycharmProjects/matchi
+# Запускать строго из корня проекта: пакеты живут без __init__.py, из другого
+# каталога импорты не разрешатся. Токен и доступы бот читает из .env сам.
+ExecStart=/home/nikita/PycharmProjects/matchi/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+# После пробуждения ноутбука соединения с Telegram и базой мертвы. Если процесс
+# при этом умрёт, systemd поднимет его снова; ограничитель не даёт крутить
+# перезапуск бесконечно, если сломано что-то серьёзное.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Install]
+WantedBy=default.target
