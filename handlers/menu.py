@@ -1,11 +1,16 @@
 import logging
+from contextlib import suppress
 
-from aiogram import F, Router, types
+from aiogram import Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from filters.custom_filters import IsRegistered
+from handlers.dialogs import DialogStates
+from handlers.rooms import RoomStates
 from keyboards.menu import MenuCB, extra_menu_keyboard, main_menu_keyboard
+from keyboards.reply import remove_dialog_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -24,32 +29,63 @@ class MenuHandlers:
     """
 
     def __init__(self, command_handlers, search_handlers, dialog_handlers,
-                 room_handlers, interest_handlers):
+                 room_handlers, interest_handlers, dialog_service=None):
         self.commands = command_handlers
         self.search = search_handlers
         self.dialogs = dialog_handlers
         self.rooms = room_handlers
         self.interests = interest_handlers
+        # Нужен, чтобы при уходе в раздел корректно закрыть активный диалог
+        # и уведомить собеседника, а не бросить переписку в подвешенном виде.
+        self.dialog_service = dialog_service
         self.router = Router()
 
     async def show_menu(self, message: types.Message):
         await message.answer(MENU_TITLE, reply_markup=main_menu_keyboard())
 
+    async def _leave_relay_modes(self, message: types.Message, state: FSMContext) -> None:
+        """Выводит из режимов, где реплики уходят не боту, а людям.
+
+        Без этого переход в раздел одним тапом оставлял бы пользователя
+        в активном диалоге или в чате комнаты: он отвечает боту, а сообщение
+        уезжает собеседнику или всем участникам.
+        """
+        current = await state.get_state()
+        me = message.chat.id
+
+        if current == DialogStates.active.state:
+            dialog = await self.dialog_service.get_active(me) if self.dialog_service else None
+            if dialog is not None:
+                await self.dialog_service.close(dialog, me, bot=message.bot)
+            await state.clear()
+            await message.answer("Диалог завершён.", reply_markup=remove_dialog_keyboard())
+        elif current == RoomStates.chatting.state:
+            await state.clear()
+            await message.answer("Вы вышли из чата комнаты.")
+
     async def open_section(self, call: types.CallbackQuery, callback_data: MenuCB, state: FSMContext):
         action = callback_data.action
         message = call.message
 
-        # Переключение экранов меню правим на месте, чтобы не плодить сообщения.
-        if action == "extra":
-            await call.message.edit_text(EXTRA_TITLE, reply_markup=extra_menu_keyboard())
-            await call.answer()
+        # Сообщение с меню остаётся в истории навсегда, а Telegram отдаёт для
+        # старых кнопок InaccessibleMessage — у него нет ни edit_text, ни текста.
+        if not isinstance(message, types.Message):
+            await call.answer("Меню устарело, откройте заново: /menu", show_alert=True)
             return
-        if action == "main":
-            await call.message.edit_text(MENU_TITLE, reply_markup=main_menu_keyboard())
+
+        # Переключение экранов меню правим на месте, чтобы не плодить сообщения.
+        if action in ("extra", "main"):
+            # Сначала гасим крутилку: повторный тап по той же кнопке даёт
+            # "message is not modified", и ответ на callback тогда не дошёл бы.
             await call.answer()
+            title, keyboard = ((EXTRA_TITLE, extra_menu_keyboard()) if action == "extra"
+                               else (MENU_TITLE, main_menu_keyboard()))
+            with suppress(TelegramBadRequest):
+                await message.edit_text(title, reply_markup=keyboard)
             return
 
         await call.answer()
+        await self._leave_relay_modes(message, state)
 
         if action == "search":
             await self.search.start_searching_profiles(message, state)
